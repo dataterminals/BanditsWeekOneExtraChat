@@ -17,8 +17,9 @@
        cond   = function(ctx) -> bool       -- optional gate: entry only applies
                                                to NPCs for which this is true.
        anim   = "Yes"                       -- optional; default random Talk1..5
-       action = "GIVE" | "GOTO" | "GRAB"    -- optional behaviour, see DISPATCHER
+       action = "GIVE"|"GOTO"|"GRAB"|"JOIN" -- optional behaviour, see DISPATCHER
        give   = "Base.Bandage"              -- item id, required for action=GIVE
+       nosass = true                        -- skip the female sass layer for this line
 
      RESPONSES - `res` can be:
        "a string"                      -> said as-is (supports %NAME %HOUR
@@ -58,6 +59,136 @@ local function add(entry) table.insert(data, entry) end
 -- ============================================================================
 -- CONTENT  -- this is the part you edit. Examples of every pattern below.
 -- ============================================================================
+
+-- ---- High-priority lines (added first so they outrank the generic flavour) -
+
+-- Realistic "how are you" - grounded in the spreading sickness, not "Excellent!"
+local function moodRealistic(ctx)
+    local lvl = (BWOScheduler and BWOScheduler.SymptomLevel) or 0
+    if lvl >= 3 then
+        return ctx.pick({ "Honestly? Awful. I can barely keep my head up.",
+            "Not good. Whatever's going around, I think I caught it.",
+            "I've been better. A lot better. Something's wrong with me." })
+    elseif lvl == 2 then
+        return ctx.pick({ "Rough. Can't shake this cough.",
+            "Been better - my chest feels tight and I'm wiped out.",
+            "Hanging in there, but I feel like hell, truthfully." })
+    elseif lvl == 1 then
+        return ctx.pick({ "Bit of a headache, otherwise alright I guess.",
+            "Tired. Uneasy. Can't put my finger on why.",
+            "Okay, I think. Just a little off today." })
+    else
+        return ctx.pick({ "Getting by. That's about all anyone can say lately.",
+            "Holding up. On edge, but holding up.",
+            "I'm alright. Tired, mostly. It's been a strange few days." })
+    end
+end
+
+-- The "magnetized" case: a female player carrying the charming + magnetizing +
+-- Brave traits, talking to a female NPC. They feel safe, drawn in, want to come
+-- along - and actually do (action=JOIN). Sincere tone, so sass is skipped.
+local function isMagnetized(ctx)
+    return ctx.female and ctx.you.female
+        and ctx.you.hasTrait("charming")
+        and ctx.you.hasTrait("magnetizing")
+        and ctx.you.hasTrait("Brave")
+end
+local magnetizedLines = {
+    "Honestly? Better now that you're here. Is that strange to say?",
+    "With you standing here, I feel safe. Safer than I have in days.",
+    "There's a warmth coming off you. I think I'd follow it anywhere.",
+    "I can't explain it - you make the fear go quiet. Don't leave without me.",
+    "You're kind of radiant, you know that? I just want to stay near you.",
+    "Whatever's coming, I want to face it beside you. Take me with you?",
+    "I feel steadier just looking at you. Can I come along?",
+    "Everything feels lighter with you here. I'd follow you anywhere.",
+    "You make me believe we'll be okay. Please - let me stay with you.",
+    "I don't want to lose sight of you. Wherever you're going, I'm going too.",
+}
+local magnetTriggers = {
+    {"are","you","okay"}, {"are","you","ok"}, {"you","okay"}, {"how","are","you"},
+    {"how","are","you","doing"}, {"how","do","you","feel"}, {"are","you","hurt"},
+    {"are","you","scared"}, {"are","you","alone"}, {"are","you","safe"},
+}
+for _, q in ipairs(magnetTriggers) do
+    add{ query=q, cond=isMagnetized, nosass=true, action="JOIN", anim="Yes",
+         res=function(ctx) return ctx.pick(magnetizedLines) end }
+end
+
+-- Generic realistic versions of those questions (when not magnetized)
+add{ query={"how","are","you"},         res=moodRealistic }
+add{ query={"are","you","okay"},        res=moodRealistic }
+add{ query={"are","you","ok"},          res=moodRealistic }
+add{ query={"you","okay"},              res=moodRealistic }
+add{ query={"how","are","you","doing"}, res=moodRealistic }
+add{ query={"how","do","you","feel"},   res=moodRealistic }
+add{ query={"are","you","scared"}, res={
+        "Terrified, if I'm honest. Everyone is.",
+        "Trying not to be. Not doing a great job of it.",
+        "A little. Something feels wrong out there.",
+        "You'd be a fool not to be, the way things are." } }
+add{ query={"are","you","alone"}, res={
+        "For now. Wasn't always.",
+        "Just me. Safer that way, maybe.",
+        "Yeah. It's nice to have someone to talk to, actually.",
+        "Alone enough that I'm glad you stopped." } }
+add{ query={"are","you","hurt"}, res={
+        "Not yet. Planning to keep it that way.",
+        "A few scrapes. Nothing that'll kill me.",
+        "I'm in one piece. For now." } }
+
+-- "What do you do?" - occupation from their AI role, else a stable civilian job
+local jobByProgram = {
+    Gardener    = "Groundskeeping, landscaping - that kind of thing.",
+    Janitor     = "I'm a janitor. Somebody's got to keep the place clean.",
+    Postal      = "Mail carrier. Rain, snow, or... whatever this is.",
+    Medic       = "I'm a paramedic. God knows they need us right now.",
+    Fireman     = "Firefighter. Twenty years on the job.",
+    Police      = "Police officer - though good luck reaching dispatch.",
+    Entertainer = "I perform on the street. Folks could use a smile lately.",
+    ArmyGuard   = "National Guard. They called us all up.",
+    Patrol      = "Military. Don't ask me what we're guarding against.",
+    RiotPolice  = "Riot police. It's been... a long week.",
+}
+local civilianJobs = {
+    "I work retail over at the strip mall.",
+    "Accountant. Numbers don't care about the end of the world.",
+    "Schoolteacher - was, anyway, before they closed everything.",
+    "I drive a delivery truck.",
+    "I tend bar downtown. Quiet shifts lately.",
+    "Construction. Honest work.",
+    "I'm a nurse over at the clinic.",
+    "Mechanic. I can fix anything but this mess.",
+    "I work at the bank. Can't even get my own money out - ironic, huh.",
+    "Office job. Cubicle, coffee, the whole nine yards.",
+}
+local function jobRes(ctx)
+    return jobByProgram[ctx.role] or civilianJobs[(ctx.rnd[3] % #civilianJobs) + 1]
+end
+local jobTriggers = {
+    {"what","do","you","do"}, {"what","s","your","job"}, {"whats","your","job"},
+    {"what","your","job"}, {"what","s","your","occupation"}, {"what","your","occupation"},
+    {"what","s","your","profession"}, {"where","do","you","work"},
+    {"what","do","you","do","for","a","living"},
+}
+for _, q in ipairs(jobTriggers) do
+    add{ query=q, res=jobRes }
+end
+
+-- Conversational back-channels (the player's "second message" continuers)
+add{ query={"oh","yeah"},      res={"Yeah. Dead serious.", "Mhm. Believe it.", "Wish I wasn't.", "Yeah, for real."} }
+add{ query={"i","feel","you"}, res={"Yeah. Good to know someone gets it.", "Right? Nobody else seems to.", "Means something, hearing that."} }
+add{ query={"i","hear","you"}, res={"We're on the same page, then.", "Glad someone does.", "Right back at you."} }
+add{ query={"no","way"},       res={"Way.", "I know, right?", "Swear to God.", "Wish I was making it up."} }
+add{ query={"for","real"},     res={"For real.", "Dead serious.", "I wouldn't joke about this.", "Real as it gets."} }
+add{ query={"makes","sense"},  res={"Right? Glad someone thinks so.", "Took me a while to see it too.", "It's the only thing that does."} }
+add{ query={"i","guess"},      res={"You don't sound sure.", "'I guess' is about all any of us have.", "Mm. Don't overthink it."} }
+add{ query={"fair","enough"},  res={"Damn right.", "Glad you see it that way.", "Thought you'd understand."} }
+add{ query={"damn"},           res={"Yeah. Tell me about it.", "I know.", "Crazy times, huh."} }
+add{ query={"no","kidding"},   res={"Kid you not.", "Swear it.", "Dead serious."} }
+add{ query={"go","on"},        res={"That's... about all I've got, honestly.", "Then we survive. Somehow.", "That's the part that scares me."} }
+add{ query={"then","what"},    res={"Then we figure it out. Together, ideally.", "Then? I genuinely don't know.", "Then we keep moving."} }
+add{ query={"huh"},            res={"Right?", "Yeah. Chew on that.", "Stuck with me too."} }
 
 -- ---- GRAB: tell an NPC to pick up & wield a weapon lying next to them -------
 -- Scans a couple of tiles around the NPC for a dropped weapon and equips it.
@@ -124,7 +255,6 @@ add{ query={"got","a","smoke"},
      anim="No" }
 
 -- ---- Goth / horror flavour -------------------------------------------------
-add{ query={"are","you","scared"},    res="Everyone's scared. The smart ones just hide it.", anim="PainHead" }
 add{ query={"what","s","coming"},     res="Something old, something hungry. Stay close to me." }
 add{ query={"nice","outfit"},         res=function(ctx)
         if ctx.female then return "Black hides the bloodstains. A girl plans ahead." end
@@ -544,7 +674,15 @@ local function doAction(entry, ctx)
     local act = entry.action
     local bandit, brain = ctx.bandit, ctx.brain
 
-    if act == "GIVE" then
+    if act == "JOIN" then
+        -- recruit as a follower (mirrors Week One's own JOIN)
+        Bandit.SetProgram(bandit, "Babe", {})
+        Bandit.SetHostileP(bandit, false)
+        brain.permanent = true
+        if ctx.you.hasTrait("magnetizing") then brain.loyal = true end
+        return true, nil
+
+    elseif act == "GIVE" then
         Bandit.ClearTasks(bandit)
         Bandit.AddTask(bandit, { action="Drop", anim="Forage", itemType=entry.give, time=400 })
         return true, nil
@@ -629,7 +767,7 @@ local function tryCustom(player, chatMessage, quiet)
             end
 
             local res = interpolate(override or resolveRes(v.res, ctx), ctx)
-            res = sassify(res, ctx)
+            if not v.nosass then res = sassify(res, ctx) end
             if res then bandit:addLineChatElement(res, 0, 1, 0) end
             return true
         end

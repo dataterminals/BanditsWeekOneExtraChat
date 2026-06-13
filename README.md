@@ -14,6 +14,7 @@ A standalone add-on for the [**Bandits Week One**](https://steamcommunity.com/sh
   - **Random variety** — the same question can return a different line each time.
   - **Per-speaker answers** — replies can branch on who's talking (name, gender, role, mood, personality).
   - **Consistent character voices** — each NPC has stable per-character traits, so a given survivor always answers the same way.
+  - **Sassy female NPCs** — women automatically layer in emphasis like *"oh my god"* and *"literally,"* applied centrally so every line gets it for free.
 - **Extra roleplay / flavour lines**, easy to expand.
 
 Anything this add-on doesn't recognise falls straight through to vanilla Week One chat, so all of the original lines and behaviours keep working untouched.

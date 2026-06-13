@@ -26,6 +26,10 @@
        {"line a", "line b", "line c"}  -> one picked at RANDOM each time
        function(ctx) return "..." end  -> computed; branch on whoever is talking
 
+     NOTE: female NPCs automatically get sassy emphasis layered onto every reply
+     ("oh my god", "literally", ...). This is applied centrally by sassify() in
+     the engine, so you never have to write it into individual lines.
+
      ctx (passed to res-functions and cond) holds:
        ctx.brain      the NPC's full data table
        ctx.name       brain.fullname
@@ -36,6 +40,8 @@
        ctx.rnd        array of per-NPC random numbers, STABLE for that NPC's life
                       (e.g. ctx.rnd[2] is 0-9 and never changes for them)
        ctx.pick(list) helper = pick one at random
+       ctx.said       the raw lowercased message you typed (inspect what was said)
+       ctx.lemma      the lemmatised message
        ctx.player / ctx.bandit   the player and the NPC zombie object
 ============================================================================ ]]--
 
@@ -119,6 +125,127 @@ add{ query={"nice","outfit"},         res=function(ctx)
         return "Black hides the bloodstains. Practical." end, anim="Clap" }
 add{ query={"tell","me","a","secret"},res={"I've seen the dead get back up.", "I stopped checking if the bites heal.", "There's no one left to call for help."} }
 
+-- ---- Money / currency: panic and ruin (it's 1993 and it's all falling apart)
+-- Any mention of money draws an in-character lament. Each NPC has a STABLE
+-- "money sob-story" (picked from ctx.rnd) so a given survivor is consistent -
+-- but if you specifically name banks or investments, the reply leans that way.
+local moneyLines = {
+    bank = {
+        "My money? Locked in the bank. ATMs are dead, the doors are chained.",
+        "Can't touch a cent. Knox Bank's been 'temporarily closed' for days.",
+        "It's all in my account and I can't get a single dollar of it out.",
+        "Tried every ATM in town. Nothing. Might as well be Monopoly money.",
+        "The bank won't answer. My savings might as well be on the moon.",
+    },
+    lost = {
+        "Lost it. All of it. Don't even ask me how.",
+        "Had a wad of cash, now it's gone. Must've had a hole in my pocket.",
+        "Someone cleaned me out. Woke up and my savings had just... vanished.",
+        "Every bill I owned, gone. This whole week's been cursed.",
+        "Don't talk to me about money. I lost the lot.",
+    },
+    investments = {
+        "My portfolio's down ninety percent. Ninety! In a week!",
+        "Everything I invested is in free-fall. Watching it tank in real time.",
+        "Should've sold last month. Now my stocks aren't worth the paper.",
+        "My broker stopped answering. Never a good sign for the markets.",
+        "Sank my life savings into the market. The market sank right back.",
+    },
+    spent = {
+        "Spent every last dime. Don't ask on what.",
+        "Blew it all. Figured, what's the point of saving now?",
+        "Gone. I've been spending like the world's ending. ...It might be.",
+        "Treated myself. Repeatedly. Wallet's empty and I regret nothing.",
+        "All spent. Beats leaving it to rot in a bank, right?",
+    },
+    broke = {
+        "Money? Ha. Never had two nickels to rub together. Doesn't faze me.",
+        "I'm broke and always have been. Hard times don't scare the poor.",
+        "Can't lose what you never had. I'm not losing sleep over cash.",
+        "Rich folks are panicking. Me? I've got nothing to panic about.",
+        "Never trusted banks, never had savings. Joke's on the rest of 'em.",
+    },
+}
+
+local function moneyRes(ctx)
+    local s = ctx.said or ""
+    local key
+    if s:find("invest") or s:find("stock") or s:find("portfolio") or s:find("market") then
+        key = "investments"
+    elseif s:find("bank") or s:find("atm") or s:find("withdraw") or s:find("deposit") or s:find("savings") then
+        key = "bank"
+    else
+        -- otherwise fall back to this NPC's own stable money sob-story
+        local buckets = { "bank", "lost", "investments", "spent", "broke" }
+        key = buckets[(ctx.rnd[3] % 5) + 1]
+    end
+    return ctx.pick(moneyLines[key])
+end
+
+-- One trigger per money/currency word; all share the lament above.
+local moneyWords = {
+    "money", "cash", "dollar", "dollars", "currency", "bank", "banks",
+    "savings", "wealth", "fortune", "investment", "investments", "stocks",
+    "portfolio", "wallet", "bucks", "paycheck", "salary", "loan", "debt",
+    "mortgage", "retirement", "withdraw", "deposit", "atm",
+}
+for _, w in ipairs(moneyWords) do
+    add{ query={ w }, res=moneyRes }
+end
+
+-- ---- The big picture: "what's going on?" / "do you know what's happening?" --
+-- About the whole situation everyone's caught in. Each NPC has a STABLE
+-- worldview (via ctx.rnd) - conspiratorial, informed, or apathetic - so the
+-- paranoid stay paranoid and the burnouts stay checked-out. Naming a conspiracy
+-- outright nudges anyone toward the tinfoil-hat answer.
+local situationLines = {
+    conspiratorial = {
+        "You didn't hear it from me, but the government's known for weeks.",
+        "It's a cover-up. They're calling it a 'flu.' It is not a flu.",
+        "Military doesn't block roads over a cough. They're hiding something.",
+        "They quarantined whole towns. You don't do that over nothing.",
+        "Chemical leak, lab spill, who knows. But it's man-made, mark my words.",
+        "Check the shortwave. What they're NOT saying tells you everything.",
+    },
+    informed = {
+        "People are getting sick. Real sick. And the worst cases don't recover.",
+        "The army's setting up blockades, sealing off the whole county.",
+        "Radio said stay indoors and avoid anyone sick. So that's what I do.",
+        "It started with that cough going around. Now it's everywhere.",
+        "Hospitals are overrun. They turned my neighbor away at the door.",
+        "Whatever it is, it spreads fast. Keep clear of anyone coughing.",
+    },
+    apathetic = {
+        "No idea, and honestly? Not my problem. I keep my head down.",
+        "Couldn't tell you. I stopped watching the news days ago.",
+        "Something's going on, sure. Always is. I've got my own troubles.",
+        "Don't know, don't care. It'll sort itself out or it won't.",
+        "Beats me. Whatever it is, worrying won't help.",
+        "Eh. People panic over everything lately. I'm not biting.",
+    },
+}
+
+local function situationRes(ctx)
+    local s = ctx.said or ""
+    local key
+    if s:find("conspiracy") or s:find("cover") or s:find("government") then
+        key = "conspiratorial"
+    else
+        local buckets = { "conspiratorial", "informed", "apathetic" }
+        key = buckets[(ctx.rnd[2] % 3) + 1]
+    end
+    return ctx.pick(situationLines[key])
+end
+
+local situationTriggers = {
+    {"happening"}, {"going","on"}, {"situation"}, {"any","news"},
+    {"heard","anything"}, {"know","anything"}, {"what","happened"},
+    {"what","this","about"},
+}
+for _, q in ipairs(situationTriggers) do
+    add{ query=q, res=situationRes }
+end
+
 -- ============================================================================
 -- ENGINE  -- you normally won't need to touch anything below here.
 -- ============================================================================
@@ -155,6 +282,20 @@ local function resolveRes(res, ctx)
     if type(res) == "function" then res = res(ctx) end
     if type(res) == "table" then res = BanditUtils.Choice(res) end
     return res
+end
+
+-- Female NPCs layer sassy emphasis onto their replies ("oh my god", "literally",
+-- ...). Applied automatically to every one of our responses when the speaker is
+-- female, so individual lines never need to spell it out.
+local SASS_PREFIX = { "Oh my god. ", "Ugh. ", "Okay, like... ", "Honestly? ",
+                      "Oh my god, like... ", "I mean... ", "So, like... " }
+local SASS_SUFFIX = { " I literally can't even.", " It's literally insane.",
+                      " Like... I can't.", " Oh my god.", " Literally.", " I'm so done." }
+local function sassify(text, ctx)
+    if not ctx.female or not text or text == "" then return text end
+    if ZombRand(100) < 65 then text = ctx.pick(SASS_PREFIX) .. text end
+    if ZombRand(100) < 45 then text = text .. ctx.pick(SASS_SUFFIX) end
+    return text
 end
 
 -- Live %VAR interpolation (small mirror of vanilla's vars).
@@ -301,6 +442,8 @@ local function wrappedSay(chatMessage, quiet)
         local w = Lemmats and Lemmats.EN and Lemmats.EN[word]
         if w then cm2 = cm2 .. w .. " " end
     end
+    ctx.said = cm    -- raw lowercased message, so res-functions can inspect it
+    ctx.lemma = cm2  -- lemmatised message
 
     for _, v in ipairs(data) do
         local allMatch = true
@@ -334,6 +477,7 @@ local function wrappedSay(chatMessage, quiet)
             end
 
             local res = interpolate(override or resolveRes(v.res, ctx), ctx)
+            res = sassify(res, ctx)
             if res then bandit:addLineChatElement(res, 0, 1, 0) end
             return
         end

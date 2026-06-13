@@ -14,7 +14,7 @@ A standalone add-on for the [**Bandits Week One**](https://steamcommunity.com/sh
   - **Random variety** — the same question can return a different line each time.
   - **Per-speaker answers** — replies can branch on who's talking (name, gender, role, mood, personality).
   - **Consistent character voices** — each NPC has stable per-character traits, so a given survivor always answers the same way.
-  - **Sassy female NPCs** — women automatically layer in emphasis like *"oh my god"* and *"literally,"* applied centrally so every line gets it for free.
+  - **Sassy female NPCs** — women get a light, occasional sassy inflection (*"honestly,"* *"oh my god,"* *"…literally"*), woven into the sentence rather than bolted on. Tunable via `SASS_CHANCE_*`.
   - **Player-aware** — replies can read *your* status and gear (armed? bleeding? injured? wearing a hazmat suit?) through `ctx.you`.
 - **Extra roleplay / flavour lines**, easy to expand.
 

@@ -426,17 +426,29 @@ local function resolveRes(res, ctx)
     return res
 end
 
--- Female NPCs layer sassy emphasis onto their replies ("oh my god", "literally",
--- ...). Applied automatically to every one of our responses when the speaker is
--- female, so individual lines never need to spell it out.
-local SASS_PREFIX = { "Oh my god. ", "Ugh. ", "Okay, like... ", "Honestly? ",
-                      "Oh my god, like... ", "I mean... ", "So, like... " }
-local SASS_SUFFIX = { " I literally can't even.", " It's literally insane.",
-                      " Like... I can't.", " Oh my god.", " Literally.", " I'm so done." }
+-- Female NPCs get a light sassy inflection. Kept subtle on purpose: only a
+-- minority of lines are touched, never both ends at once, and prefixes flow into
+-- the sentence (comma + lowercased continuation) so it reads as natural speech
+-- rather than a canned phrase bolted on. Tune SASS_CHANCE_* to taste.
+local SASS_PREFIX = { "Honestly, ", "Okay, ", "I mean, ", "Ugh, ", "Like, ", "Oh my god, " }
+local SASS_SUFFIX = { " Like, seriously.", " I swear.", " ...honestly.", " Literally." }
+local SASS_CHANCE_PREFIX = 28   -- % of female lines that get a leading inflection
+local SASS_CHANCE_SUFFIX = 12   -- % that get a trailing tic instead (mutually exclusive)
+
+-- Lowercase the first letter so a comma-prefix flows, but leave a lone "I" alone.
+local function lcfirst(s)
+    if s:match("^I%f[%A]") then return s end   -- "I", "I'm", "I'll", ...
+    return s:sub(1, 1):lower() .. s:sub(2)
+end
+
 local function sassify(text, ctx)
     if not ctx.female or not text or text == "" then return text end
-    if ZombRand(100) < 65 then text = ctx.pick(SASS_PREFIX) .. text end
-    if ZombRand(100) < 45 then text = text .. ctx.pick(SASS_SUFFIX) end
+    local roll = ZombRand(100)
+    if roll < SASS_CHANCE_PREFIX then
+        text = ctx.pick(SASS_PREFIX) .. lcfirst(text)
+    elseif roll < SASS_CHANCE_PREFIX + SASS_CHANCE_SUFFIX then
+        text = text .. ctx.pick(SASS_SUFFIX)
+    end
     return text
 end
 

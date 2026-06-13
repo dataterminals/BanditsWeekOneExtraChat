@@ -1,0 +1,5 @@
+name=Bandits Week One - Extra Chat
+id=BanditsWeekOneExtraChat
+description=Standalone add-on for Bandits Week One. Wraps BWOChat.Say on game start (so load order does not matter) to add new things you can say to NPCs, new responses, and new actions - give/trade an item, send a follower to where you are pointing - without editing the Week One mod. Anything it does not recognise falls through to vanilla chat untouched. Safe to remove.
+modversion=0.1.0
+require=BanditsWeekOne

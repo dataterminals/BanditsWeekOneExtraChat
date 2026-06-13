@@ -85,35 +85,87 @@ local function moodRealistic(ctx)
 end
 
 -- The "magnetized" case: a female player carrying the charming + magnetizing +
--- Brave traits, talking to a female NPC. They feel safe, drawn in, want to come
--- along - and actually do (action=JOIN). Sincere tone, so sass is skipped.
+-- Brave traits, talking to a female NPC. She is powerfully drawn to the player -
+-- calmed, radiance-struck, aching to come along. It unfolds in three stages:
+--   (1) asking how she IS only deepens the pull (no recruiting),
+--   (2) the player reassuring her melts her further (still no recruiting),
+--   (3) an explicit invite ("c'mon", "come along") is what finally - eagerly -
+--       makes her join (action=JOIN).
+-- Sincere throughout, so the female sass layer is skipped (nosass).
 local function isMagnetized(ctx)
     return ctx.female and ctx.you.female
         and ctx.you.hasTrait("charming")
         and ctx.you.hasTrait("magnetizing")
         and ctx.you.hasTrait("Brave")
 end
-local magnetizedLines = {
-    "Honestly? Better now that you're here. Is that strange to say?",
-    "With you standing here, I feel safe. Safer than I have in days.",
-    "There's a warmth coming off you. I think I'd follow it anywhere.",
-    "I can't explain it - you make the fear go quiet. Don't leave without me.",
-    "You're kind of radiant, you know that? I just want to stay near you.",
-    "Whatever's coming, I want to face it beside you. Take me with you?",
-    "I feel steadier just looking at you. Can I come along?",
-    "Everything feels lighter with you here. I'd follow you anywhere.",
-    "You make me believe we'll be okay. Please - let me stay with you.",
-    "I don't want to lose sight of you. Wherever you're going, I'm going too.",
-}
-local magnetTriggers = {
+
+-- helper: register a batch of magnetized triggers sharing one response pool
+local function addMagnet(triggers, opts)
+    for _, q in ipairs(triggers) do
+        add{ query=q, cond=isMagnetized, nosass=true, anim="Yes",
+             action=opts.action, res=function(ctx) return ctx.pick(opts.lines) end }
+    end
+end
+
+-- (1) Presence / wellbeing - drawn in, calmed, radiance-struck. No recruiting.
+addMagnet({
     {"are","you","okay"}, {"are","you","ok"}, {"you","okay"}, {"how","are","you"},
     {"how","are","you","doing"}, {"how","do","you","feel"}, {"are","you","hurt"},
     {"are","you","scared"}, {"are","you","alone"}, {"are","you","safe"},
-}
-for _, q in ipairs(magnetTriggers) do
-    add{ query=q, cond=isMagnetized, nosass=true, action="JOIN", anim="Yes",
-         res=function(ctx) return ctx.pick(magnetizedLines) end }
-end
+}, { lines = {
+    "Honestly? Better, now that you're close. You make the air feel... safe.",
+    "I keep losing my train of thought around you. There's just this warmth.",
+    "Scared? Strange - the fear dims when you're near, like you're shielding me from it.",
+    "More than okay. I feel steady for the first time in days, and it's because of you.",
+    "Alone, until you walked over. I don't think I want to be anywhere you aren't.",
+    "There's a light about you. I noticed it the second you spoke. I can't look away.",
+    "I barely know you, and yet I'd trust you with everything. Is that crazy?",
+    "Hurt, tired, frightened - it all goes quiet when you look at me like that.",
+    "You feel like the calm in the middle of all this. I just want to stand in it.",
+    "Safe. Genuinely safe. I'd forgotten what that even felt like.",
+    "Something about you settles me right down. My heart isn't racing anymore.",
+    "You're glowing - I can't explain it. I just want to stay near it. Near you.",
+    "If anyone's making it through this, it's you. And I want to be wherever you are.",
+    "I'm alright. You have this way of making everything feel survivable.",
+}})
+
+-- (2) Reassurance from the player - she melts, trusts, all but asks to be taken.
+addMagnet({
+    {"trust","me"}, {"you","re","safe"}, {"you","are","safe"}, {"got","you"},
+    {"protect","you"}, {"don","t","be","scared"}, {"don","t","be","afraid"},
+    {"stay","close"}, {"i","won","t","let"},
+}, { lines = {
+    "I do trust you. Completely - like I've known you my whole life.",
+    "When you say it, I actually believe it. The knot in my chest just... loosens.",
+    "I'm not scared. Not with you saying that. You make it sound so certain.",
+    "I'd go anywhere you told me to. You know that already, don't you?",
+    "Something in me just let go. I'd put my life in your hands.",
+    "Stay close? I wasn't planning to leave your side for a second.",
+    "You don't even have to ask. I'm yours to look after.",
+    "Keep talking like that and I'll never want to be more than a step from you.",
+    "I feel it - that pull. Like I was always meant to find you.",
+    "Okay. Okay. I feel safe. Just... don't go anywhere without me, alright?",
+}})
+
+-- (3) The invitation - eager, unhesitating yes, and she actually joins.
+addMagnet({
+    {"come","along"}, {"come","with","me"}, {"come","here"}, {"come","on"},
+    {"c'mon"}, {"cmon"}, {"c'mere"}, {"cmere"}, {"let","s","go"}, {"lets","go"},
+    {"stay","with","me"}, {"join","me"}, {"by","my","side"},
+}, { action="JOIN", lines = {
+    "Yes. God, yes - I thought you'd never ask. Lead the way.",
+    "You don't have to tell me twice. I'm with you, all of it.",
+    "I'm coming. I'd follow you into anything - I mean that.",
+    "Finally. I've been waiting for you to say it. Let's go.",
+    "Right behind you. Wherever you go, I go. That's settled now.",
+    "Yes - wherever this leads, I want to be at your side for it.",
+    "Took you long enough. I'm yours. Let's get out of here.",
+    "Of course. Honestly? I'd have followed you even if you hadn't asked.",
+    "Without a second thought. You lead, I'm right there.",
+    "I'm coming - and I'm not letting you out of my sight again.",
+    "Say no more. I'm with you now, for whatever comes.",
+    "Yes. It feels right, being near you. Let's go - together.",
+}})
 
 -- Generic realistic versions of those questions (when not magnetized)
 add{ query={"how","are","you"},         res=moodRealistic }

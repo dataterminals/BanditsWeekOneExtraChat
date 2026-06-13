@@ -15,6 +15,7 @@ A standalone add-on for the [**Bandits Week One**](https://steamcommunity.com/sh
   - **Per-speaker answers** — replies can branch on who's talking (name, gender, role, mood, personality).
   - **Consistent character voices** — each NPC has stable per-character traits, so a given survivor always answers the same way.
   - **Sassy female NPCs** — women automatically layer in emphasis like *"oh my god"* and *"literally,"* applied centrally so every line gets it for free.
+  - **Player-aware** — replies can read *your* status and gear (armed? bleeding? panicking? wearing a hazmat suit?) through `ctx.you`.
 - **Extra roleplay / flavour lines**, easy to expand.
 
 Anything this add-on doesn't recognise falls straight through to vanilla Week One chat, so all of the original lines and behaviours keep working untouched.
@@ -75,7 +76,7 @@ An entry supports:
 | `action` | Optional: `"GIVE"`, `"GOTO"`, or `"GRAB"`. |
 | `give`   | Item id, required when `action="GIVE"` (e.g. `"Base.Bandage"`). |
 
-`ctx` exposes the speaking NPC: `name`, `female`, `role`, `hostile`, `smoker`, `alcoholic`, `polish`, `rnd` (stable per-NPC randoms), plus `pick(list)` and the raw `brain` / `bandit` / `player`.
+`ctx` exposes the speaking NPC: `name`, `female`, `role`, `hostile`, `smoker`, `alcoholic`, `polish`, `rnd` (stable per-NPC randoms), plus `pick(list)` and the raw `brain` / `bandit` / `player`. It also exposes **`ctx.you`** — the *player's* status and equipment: flags like `armed`, `injured`, `bleeding`, `infected`, `panicking`, `drunk`; values like `weapon`, `health`, `kills`; and helpers `hasTrait("Brave")`, `wears("hazmat")`, `holding("axe")`.
 
 ## Status
 

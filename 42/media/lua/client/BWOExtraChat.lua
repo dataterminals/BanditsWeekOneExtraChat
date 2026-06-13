@@ -42,6 +42,11 @@
        ctx.pick(list) helper = pick one at random
        ctx.said       the raw lowercased message you typed (inspect what was said)
        ctx.lemma      the lemmatised message
+       ctx.you        the PLAYER's status & gear, precomputed for convenience:
+                        flags  .female .armed .injured .bleeding .infected
+                               .panicking .drunk .tired .sneaking .running
+                        values .weapon .health .panic .kills
+                        funcs  .hasTrait("Brave") .wears("hazmat") .holding("axe")
        ctx.player / ctx.bandit   the player and the NPC zombie object
 ============================================================================ ]]--
 
@@ -246,6 +251,38 @@ for _, q in ipairs(situationTriggers) do
     add{ query=q, res=situationRes }
 end
 
+-- ---- Player-aware: NPCs react to YOUR status and gear (via ctx.you) --------
+add{ query={"can","you","fight"}, anim="Yes", res=function(ctx)
+    if ctx.you.armed then
+        return "With that " .. (ctx.you.weapon or "thing") .. "? Sure, lead the way."
+    end
+    return "You're not even armed. Find something first."
+end }
+
+add{ query={"should","i","be","worried"}, res=function(ctx)
+    if ctx.you.panicking then return "Hey - breathe. You're shaking. It'll be okay." end
+    return "You seem calm enough. Keep it that way."
+end }
+
+add{ query={"how","do","i","look"}, res=function(ctx)
+    local you = ctx.you
+    if you.bleeding then return "You're bleeding! Sit down before you pass out." end
+    if you.wears("hazmat") then return "Why the hazmat suit? What do you KNOW?" end
+    if you.wears("police") then return "A cop? Are they finally evacuating us?" end
+    return "Like the rest of us. Tired and scared."
+end }
+
+add{ query={"am","i","sick"}, res=function(ctx)
+    if ctx.you.infected then return "...You don't look good. Keep your distance, okay?" end
+    return "You look fine. Just that cough everyone's got."
+end }
+
+add{ query={"notice","anything"}, res=function(ctx)
+    if ctx.you.holding("axe") then return "That axe of yours? Smart. Keep it close." end
+    if ctx.you.kills > 0 then return "You've got blood on you. What happened?" end
+    return "Nothing in particular. Should I?"
+end }
+
 -- ============================================================================
 -- ENGINE  -- you normally won't need to touch anything below here.
 -- ============================================================================
@@ -263,11 +300,57 @@ local function getTarget(player)
     return nil, nil
 end
 
+-- Pre-compute the PLAYER's status and equipment into a tidy bundle, so flavour
+-- lines can write ctx.you.armed instead of digging through the raw Java API.
+local function buildYou(player)
+    local hand  = player:getPrimaryHandItem()
+    local off   = player:getSecondaryHandItem()
+    local bd    = player:getBodyDamage()
+    local stats = player:getStats()
+
+    local function isWep(it) return it ~= nil and it:IsWeapon() end
+    local function typeHas(it, needle)
+        return it ~= nil and string.find(string.lower(it:getFullType()), needle, 1, true) ~= nil
+    end
+
+    local you = { player = player }
+    you.female    = player:isFemale()
+    you.armed     = isWep(hand) or isWep(off)
+    you.weapon    = (isWep(hand) and hand:getName()) or (isWep(off) and off:getName()) or nil
+    you.health    = bd and bd:getOverallBodyHealth() or 100        -- 0..100
+    you.injured   = you.health < 100
+    you.bleeding  = (bd and bd:getNumPartsBleeding() or 0) > 0
+    you.infected  = bd and bd:isInfected() or false
+    you.panic     = stats and stats:getPanic() or 0                -- 0..100
+    you.panicking = you.panic > 40
+    you.drunk     = (stats and stats:getDrunkenness() or 0) > 25
+    you.tired     = (stats and stats:getFatigue() or 0) > 0.6      -- fatigue 0..1
+    you.kills     = player:getZombieKills()
+    you.sneaking  = player:isSneaking()
+    you.running   = player:isRunning()
+
+    you.hasTrait = function(t) return player:hasTrait(t) end
+    you.holding  = function(needle)             -- substring match on held items
+        needle = string.lower(needle)
+        return typeHas(hand, needle) or typeHas(off, needle)
+    end
+    you.wears = function(needle)                -- substring match on worn clothing
+        needle = string.lower(needle)
+        local worn = player:getWornItems()
+        for i = 0, worn:size() - 1 do
+            if typeHas(worn:get(i):getItem(), needle) then return true end
+        end
+        return false
+    end
+    return you
+end
+
 -- Build the context table handed to res-functions and cond-functions.
 local function buildCtx(player, bandit, brain)
     local p = brain.personality or {}
     return {
         player = player, bandit = bandit, brain = brain,
+        you = buildYou(player),
         name = brain.fullname, female = brain.female,
         role = brain.program and brain.program.name,
         hostile = brain.hostile,

@@ -308,26 +308,34 @@ local function buildYou(player)
     local bd    = player:getBodyDamage()
     local stats = player:getStats()
 
+    -- Defensive getter: any missing/renamed B42 method degrades to a default
+    -- instead of throwing and killing the whole chat send.
+    local function safe(fn, default)
+        local ok, val = pcall(fn)
+        if ok and val ~= nil then return val end
+        return default
+    end
+
     local function isWep(it) return it ~= nil and it:IsWeapon() end
     local function typeHas(it, needle)
         return it ~= nil and string.find(string.lower(it:getFullType()), needle, 1, true) ~= nil
     end
 
     local you = { player = player }
-    you.female    = player:isFemale()
+    you.female    = safe(function() return player:isFemale() end, false)
     you.armed     = isWep(hand) or isWep(off)
     you.weapon    = (isWep(hand) and hand:getName()) or (isWep(off) and off:getName()) or nil
-    you.health    = bd and bd:getOverallBodyHealth() or 100        -- 0..100
+    you.health    = safe(function() return bd:getOverallBodyHealth() end, 100)    -- 0..100
     you.injured   = you.health < 100
-    you.bleeding  = (bd and bd:getNumPartsBleeding() or 0) > 0
-    you.infected  = bd and bd:isInfected() or false
-    you.panic     = stats and stats:getPanic() or 0                -- 0..100
+    you.bleeding  = safe(function() return bd:getNumPartsBleeding() > 0 end, false)
+    you.infected  = safe(function() return bd:isInfected() end, false)
+    you.panic     = safe(function() return stats:getPanic() end, 0)               -- 0..100
     you.panicking = you.panic > 40
-    you.drunk     = (stats and stats:getDrunkenness() or 0) > 25
-    you.tired     = (stats and stats:getFatigue() or 0) > 0.6      -- fatigue 0..1
-    you.kills     = player:getZombieKills()
-    you.sneaking  = player:isSneaking()
-    you.running   = player:isRunning()
+    you.drunk     = safe(function() return stats:getDrunkenness() end, 0) > 25
+    you.tired     = safe(function() return stats:getFatigue() end, 0) > 0.6       -- fatigue 0..1
+    you.kills     = safe(function() return player:getZombieKills() end, 0)
+    you.sneaking  = safe(function() return player:isSneaking() end, false)
+    you.running   = safe(function() return player:isRunning() end, false)
 
     you.hasTrait = function(t) return player:hasTrait(t) end
     you.holding  = function(needle)             -- substring match on held items
@@ -509,13 +517,11 @@ end
 -- ----------------------------------------------------------------------------
 local origSay
 
-local function wrappedSay(chatMessage, quiet)
-    local player = getSpecificPlayer(0)
-    if not player then return end
-
+-- Runs our custom matching/handling. Returns true if it handled the message.
+local function tryCustom(player, chatMessage, quiet)
     -- No NPC in range -> nothing we can do; let vanilla print the player line.
     local bandit, brain = getTarget(player)
-    if not bandit then return origSay(chatMessage, quiet) end
+    if not bandit then return false end
     local ctx = buildCtx(player, bandit, brain)
 
     -- Build raw + lemmatised copies of the message (same as vanilla).
@@ -562,10 +568,23 @@ local function wrappedSay(chatMessage, quiet)
             local res = interpolate(override or resolveRes(v.res, ctx), ctx)
             res = sassify(res, ctx)
             if res then bandit:addLineChatElement(res, 0, 1, 0) end
-            return
+            return true
         end
     end
 
+    return false
+end
+
+-- Wrapper that replaces BWOChat.Say. Never lets our code break chat: on any
+-- error (or no custom match) it falls back to the original Week One handler.
+local function wrappedSay(chatMessage, quiet)
+    local player = getSpecificPlayer(0)
+    if not player then return end
+    local ok, handled = pcall(tryCustom, player, chatMessage, quiet)
+    if ok and handled then return end
+    if not ok then
+        print("[BWOExtraChat] error in custom handler, using vanilla: " .. tostring(handled))
+    end
     return origSay(chatMessage, quiet)
 end
 

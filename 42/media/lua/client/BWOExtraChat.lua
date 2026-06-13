@@ -84,34 +84,48 @@ local function moodRealistic(ctx)
     end
 end
 
--- The "magnetized" case: a female player carrying the charming + magnetizing +
+-- The "captivated" case: a female player carrying the charming + magnetizing +
 -- Brave traits, talking to a female NPC. She is powerfully drawn to the player -
 -- calmed, radiance-struck, aching to come along. It unfolds in three stages:
---   (1) asking how she IS only deepens the pull (no recruiting),
+--   (1) asking how she IS - general wellbeing, or specifically about fear &
+--       safety (its own pool, 1b) - only deepens the pull (no recruiting),
 --   (2) the player reassuring her melts her further (still no recruiting),
 --   (3) an explicit invite ("c'mon", "come along") is what finally - eagerly -
 --       makes her join (action=JOIN).
 -- Sincere throughout, so the female sass layer is skipped (nosass).
-local function isMagnetized(ctx)
-    return ctx.female and ctx.you.female
-        and ctx.you.hasTrait("charming")
-        and ctx.you.hasTrait("magnetizing")
-        and ctx.you.hasTrait("Brave")
+local CAPTIVATE_TRAITS = { "charming", "magnetizing", "Brave" }
+-- The PLAYER half of the gate, factored out so the proximity-bark engine (far
+-- below) can reuse it without building a full chat ctx: a female player wearing
+-- all three traits.
+local function playerCanCaptivate(player)
+    if not player or not player:isFemale() then return false end
+    for _, t in ipairs(CAPTIVATE_TRAITS) do
+        if not player:hasTrait(t) then return false end
+    end
+    return true
 end
 
--- helper: register a batch of magnetized triggers sharing one response pool
-local function addMagnet(triggers, opts)
+local function isCaptivated(ctx)
+    return ctx.female and playerCanCaptivate(ctx.player)
+end
+
+-- helper: register a batch of captivated triggers sharing one response pool
+local function addCaptivated(triggers, opts)
     for _, q in ipairs(triggers) do
-        add{ query=q, cond=isMagnetized, nosass=true, anim="Yes",
+        add{ query=q, cond=isCaptivated, nosass=true, anim="Yes",
              action=opts.action, res=function(ctx) return ctx.pick(opts.lines) end }
     end
 end
 
 -- (1) Presence / wellbeing - drawn in, calmed, radiance-struck. No recruiting.
-addMagnet({
-    {"are","you","okay"}, {"are","you","ok"}, {"you","okay"}, {"how","are","you"},
-    {"how","are","you","doing"}, {"how","do","you","feel"}, {"are","you","hurt"},
-    {"are","you","scared"}, {"are","you","alone"}, {"are","you","safe"},
+addCaptivated({
+    {"are","you","okay"}, {"are","you","ok"}, {"you","okay"}, {"are","u","okay"},
+    {"are","u","ok"}, {"u","okay"}, {"u","ok"}, {"you","good"}, {"u","good"},
+    {"you","alright"}, {"u","alright"}, {"how","are","you"}, {"how","are","you","doing"},
+    {"how","r","u"}, {"how","r","u","doing"}, {"how","you","doing"}, {"how","u","doing"},
+    {"how","do","you","feel"}, {"how","do","u","feel"}, {"how","you","feeling"},
+    {"how","u","feeling"}, {"are","you","hurt"}, {"are","u","hurt"}, {"you","hurt"},
+    {"u","hurt"}, {"are","you","alone"}, {"are","u","alone"}, {"you","alone"}, {"u","alone"},
 }, { lines = {
     "Honestly? Better, now that you're close. You make the air feel... safe.",
     "I keep losing my train of thought around you. There's just this warmth.",
@@ -129,11 +143,53 @@ addMagnet({
     "I'm alright. You have this way of making everything feel survivable.",
 }})
 
+-- (1b) Fear & safety - "are you scared / safe?" given its own pool. Here she's
+-- raw and honest: the full range from real fear and half-buried trauma, through
+-- not-wanting-to-talk, to - because YOU are the one asking - a fragile, growing
+-- hope that together it might be survivable. Still no recruiting.
+addCaptivated({
+    {"are","you","scared"}, {"are","u","scared"}, {"you","scared"}, {"u","scared"},
+    {"are","you","afraid"}, {"are","u","afraid"}, {"you","afraid"}, {"u","afraid"},
+    {"are","you","frightened"}, {"you","frightened"}, {"u","frightened"},
+    {"are","you","terrified"}, {"you","terrified"}, {"u","terrified"},
+    {"are","you","worried"}, {"you","worried"}, {"u","worried"},
+    {"are","you","nervous"}, {"you","nervous"}, {"u","nervous"},
+    {"are","you","safe"}, {"are","u","safe"}, {"u","safe"}, {"feel","safe"},
+    {"you","feel","safe"}, {"do","you","feel","safe"}, {"are","we","safe"},
+    {"we","safe"}, {"you","in","danger"}, {"in","danger"},
+}, { lines = {
+    "Safe? No - none of us are, not really. But the fear loosens its grip when you're standing here.",
+    "Of course I'm not safe. Nobody is. I won't lie to you, of all people - we're in a bad way.",
+    "I don't know. I honestly don't know anymore. I stopped being able to tell up from down.",
+    "Truthfully? No idea. I just keep moving and praying. It helps that you're moving with me.",
+    "I'm freaked out. Completely. My hands haven't stopped shaking in two days.",
+    "Terrified. Every shadow, every sound out there. I'm scared right down to my bones.",
+    "I saw something. Back there. I can't get it out of my head - people I knew, just... gone.",
+    "I watched it happen to someone. Up close. You don't walk away from a thing like that unchanged.",
+    "There were people on my street. I heard them through the walls. I ran. God help me, I ran.",
+    "I don't want to talk about what I've seen. Please. Not yet. Maybe not ever.",
+    "Don't ask me what's out there. I can't say it out loud - not even to you, and I'd tell you anything.",
+    "...Can we not? If I start, I'll come apart. Just - stay near me instead. That helps more.",
+    "It's awful. It is. But - and maybe this is you - it's started to feel like it might get better.",
+    "I'm scared. But when you're close, I actually believe we come through this. I didn't, before you.",
+    "I don't know what tomorrow brings. I only know that with you beside me, I think we manage it.",
+    "Things are bad, I won't pretend otherwise. But I'm starting to believe we'll see the other side.",
+    "For the first time, I don't feel like I'm facing it alone. You've no idea what that does for me.",
+    "An hour ago I was falling apart. Now, with you here, the fear has somewhere to go. It's quieter.",
+    "Scared, yes. Less of it by the minute, though. You do that to a person - to me.",
+    "Safe is a strange word these days. The nearest I've come to it is right here, next to you.",
+    "Some nights I'm sure we won't make it. Then you look at me like that, and I'm sure we will.",
+    "I hold it together because I have to. But with you, I can admit I'm frightened - and feel lighter for it.",
+}})
+
 -- (2) Reassurance from the player - she melts, trusts, all but asks to be taken.
-addMagnet({
-    {"trust","me"}, {"you","re","safe"}, {"you","are","safe"}, {"got","you"},
-    {"protect","you"}, {"don","t","be","scared"}, {"don","t","be","afraid"},
-    {"stay","close"}, {"i","won","t","let"},
+addCaptivated({
+    {"trust","me"}, {"you","re","safe"}, {"you","are","safe"}, {"ur","safe"},
+    {"your","safe"}, {"got","you"}, {"got","u"}, {"i","got","you"}, {"i","got","u"},
+    {"protect","you"}, {"protect","u"}, {"i","ll","protect"}, {"don","t","be","scared"},
+    {"dont","be","scared"}, {"don","t","be","afraid"}, {"dont","be","afraid"},
+    {"stay","close"}, {"i","won","t","let"}, {"i","wont","let"}, {"i","m","here"},
+    {"im","here"}, {"i","m","with","you"}, {"im","with","u"},
 }, { lines = {
     "I do trust you. Completely - like I've known you my whole life.",
     "When you say it, I actually believe it. The knot in my chest just... loosens.",
@@ -148,10 +204,12 @@ addMagnet({
 }})
 
 -- (3) The invitation - eager, unhesitating yes, and she actually joins.
-addMagnet({
-    {"come","along"}, {"come","with","me"}, {"come","here"}, {"come","on"},
-    {"c'mon"}, {"cmon"}, {"c'mere"}, {"cmere"}, {"let","s","go"}, {"lets","go"},
-    {"stay","with","me"}, {"join","me"}, {"by","my","side"},
+addCaptivated({
+    {"come","along"}, {"come","with","me"}, {"come","w","me"}, {"come","with","us"},
+    {"come","here"}, {"come","on"}, {"c'mon"}, {"cmon"}, {"c'mere"}, {"cmere"},
+    {"let","s","go"}, {"lets","go"}, {"let","s","move"}, {"lets","move"},
+    {"let","s","roll"}, {"lets","roll"}, {"stay","with","me"}, {"join","me"},
+    {"join","us"}, {"follow","me"}, {"stick","with","me"}, {"by","my","side"},
 }, { action="JOIN", lines = {
     "Yes. God, yes - I thought you'd never ask. Lead the way.",
     "You don't have to tell me twice. I'm with you, all of it.",
@@ -167,7 +225,26 @@ addMagnet({
     "Yes. It feels right, being near you. Let's go - together.",
 }})
 
--- Generic realistic versions of those questions (when not magnetized)
+-- Captivated PROXIMITY barks: when a captivating player simply walks near a
+-- female NPC, the NPC speaks FIRST - unprompted, before any key-press (see the
+-- PROXIMITY BARKS engine block far below). Sincere, drawn-in, noticing-you-
+-- approach lines. Edit this pool freely; it is the content half of the feature.
+local barkLines = {
+    "Oh - it's you. I was hoping you'd come this way.",
+    "There you are... I keep finding my eyes drawn to you.",
+    "You're back. The whole room feels warmer when you're near.",
+    "I don't even know your name, and somehow I've been waiting for you.",
+    "Hey - don't go far, okay? It's easier to breathe when you're close.",
+    "I saw you coming and my heart just... settled. Strange, isn't it?",
+    "Something about you pulls me right in. I'm not even fighting it.",
+    "You walked over and the fear went quiet. How do you do that?",
+    "I keep telling myself to look away. I never quite manage it.",
+    "Stay a moment? I feel safe the second you're standing near me.",
+    "Funny - I was dreading today, and then you appeared.",
+    "I'd follow you out of here in a heartbeat, if you asked me to.",
+}
+
+-- Generic realistic versions of those questions (when not captivated)
 add{ query={"how","are","you"},         res=moodRealistic }
 add{ query={"are","you","okay"},        res=moodRealistic }
 add{ query={"are","you","ok"},          res=moodRealistic }
@@ -518,6 +595,51 @@ local function getTarget(player)
     return nil, nil
 end
 
+-- ----------------------------------------------------------------------------
+-- PROXIMITY BARKS: captivated-only, unprompted speech as the player approaches.
+-- When the player is the captivating build (female + charming + magnetizing +
+-- Brave), a nearby FEMALE, non-hostile NPC speaks first as she nears them - the
+-- captivated arc bleeding into the world. Purely cosmetic: a floating line, no
+-- recruiting and no AI change (typed chat still drives all of that). Lines live
+-- in `barkLines` up in the content section; the four knobs here are behaviour
+-- and are all safe to tune after seeing it in-game.
+--
+-- "Once per approach" is approximated cheaply: a per-NPC cooldown stops the same
+-- survivor repeating, and a global gap keeps two NPCs from barking on top of
+-- each other. We only ever inspect the single CLOSEST NPC each scan.
+-- ----------------------------------------------------------------------------
+local BARK_RANGE        = 6        -- tiles: how close before she speaks
+local BARK_SCAN_MS      = 1000     -- real ms between proximity scans (throttle)
+local BARK_NPC_COOLDOWN = 45000    -- real ms before the SAME NPC barks again
+local BARK_GLOBAL_GAP   = 6000     -- real ms minimum gap between ANY two barks
+
+local barkNextOk       = {}   -- [bandit id] -> earliest real-ms it may bark again
+local barkGlobalNextOk = 0
+local barkNextScan     = 0
+
+local function proximityBark(player)
+    if not player then return end
+    local now = getTimestampMs()
+    if now < barkNextScan then return end           -- throttle the scan itself
+    barkNextScan = now + BARK_SCAN_MS
+
+    if not playerCanCaptivate(player) then return end -- cheap gate, bail early
+    if now < barkGlobalNextOk then return end
+
+    local t = BanditUtils.GetClosestBanditLocationProgram(player, TARGET_PROGRAMS)
+    if not (t and t.id and t.dist < BARK_RANGE) then return end
+
+    local bandit = BanditZombie.GetInstanceById(t.id)
+    if not bandit then return end
+    local brain = BanditBrain.Get(bandit)
+    if not brain or not brain.female or brain.hostile then return end
+    if now < (barkNextOk[t.id] or 0) then return end
+
+    bandit:addLineChatElement(BanditUtils.Choice(barkLines), 0, 1, 0)
+    barkNextOk[t.id]   = now + BARK_NPC_COOLDOWN
+    barkGlobalNextOk   = now + BARK_GLOBAL_GAP
+end
+
 -- Pre-compute the PLAYER's status and equipment into a tidy bundle, so flavour
 -- lines can write ctx.you.armed instead of digging through the raw Java API.
 local function buildYou(player)
@@ -853,7 +975,10 @@ local function install()
     origSay = BWOChat.Say
     BWOChat.Say = wrappedSay
     BWOChat.__extraChatInstalled = true
-    print("[BWOExtraChat] installed - " .. #data .. " custom phrases active.")
+    -- proximity barks: same defensive style as the chat wrapper - never let a
+    -- per-frame error spill into the log, just skip that tick.
+    Events.OnPlayerUpdate.Add(function(player) pcall(proximityBark, player) end)
+    print("[BWOExtraChat] installed - " .. #data .. " custom phrases active (+ proximity barks).")
 end
 
 Events.OnGameStart.Add(install)

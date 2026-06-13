@@ -44,9 +44,10 @@
        ctx.lemma      the lemmatised message
        ctx.you        the PLAYER's status & gear, precomputed for convenience:
                         flags  .female .armed .injured .bleeding .infected
-                               .panicking .drunk .tired .sneaking .running
-                        values .weapon .health .panic .kills
+                               .sneaking .running
+                        values .weapon .health .kills
                         funcs  .hasTrait("Brave") .wears("hazmat") .holding("axe")
+                      (.armed/.weapon also count a weapon on your back or in your bag)
        ctx.player / ctx.bandit   the player and the NPC zombie object
 ============================================================================ ]]--
 
@@ -260,8 +261,10 @@ add{ query={"can","you","fight"}, anim="Yes", res=function(ctx)
 end }
 
 add{ query={"should","i","be","worried"}, res=function(ctx)
-    if ctx.you.panicking then return "Hey - breathe. You're shaking. It'll be okay." end
-    return "You seem calm enough. Keep it that way."
+    if ctx.you.bleeding then return "You're bleeding and asking ME if you should worry?" end
+    return ctx.pick({"Always. But it keeps you sharp.",
+                     "Worried's the right instinct these days.",
+                     "Not yet. But soon, I think."})
 end }
 
 add{ query={"how","do","i","look"}, res=function(ctx)
@@ -282,6 +285,39 @@ add{ query={"notice","anything"}, res=function(ctx)
     if ctx.you.kills > 0 then return "You've got blood on you. What happened?" end
     return "Nothing in particular. Should I?"
 end }
+
+-- ---- NPC weapons: ask what THEY are carrying (nicer than vanilla %WEAPONS) --
+local function prettyItem(fullType)
+    if not fullType then return nil end
+    local short = fullType:match("%.([^%.]+)$") or fullType
+    return (short:gsub("_", " "))   -- "Rifle_Winchester" -> "Rifle Winchester"
+end
+
+local function npcWeaponLine(ctx)
+    local w = Bandit.GetWeapons(ctx.bandit)
+    local guns = {}
+    if w.primary and w.primary.name then table.insert(guns, prettyItem(w.primary.name)) end
+    if w.secondary and w.secondary.name then table.insert(guns, prettyItem(w.secondary.name)) end
+    local melee = w.melee and prettyItem(w.melee)
+    if #guns > 0 then
+        return "Got my " .. table.concat(guns, " and my ") .. ". I know how to use it."
+    elseif melee and melee ~= "BareHands" then
+        return ctx.pick({ "Just my " .. melee .. ". It's done the job so far.",
+                          "Got my " .. melee .. " on me. Better than nothing." })
+    else
+        return ctx.pick({ "Nothing but my bare hands. Wish I had more.",
+                          "No weapon. Kind of hoping I won't need one.",
+                          "Unarmed. You're not making me nervous, are you?" })
+    end
+end
+
+local npcWeaponQ = {
+    {"are","you","armed"}, {"do","you","have","a","gun"}, {"do","you","have","a","weapon"},
+    {"what","are","you","holding"}, {"are","you","carrying"}, {"got","a","gun"},
+}
+for _, q in ipairs(npcWeaponQ) do
+    add{ query=q, res=npcWeaponLine }
+end
 
 -- ============================================================================
 -- ENGINE  -- you normally won't need to touch anything below here.
@@ -306,7 +342,6 @@ local function buildYou(player)
     local hand  = player:getPrimaryHandItem()
     local off   = player:getSecondaryHandItem()
     local bd    = player:getBodyDamage()
-    local stats = player:getStats()
 
     -- Defensive getter: any missing/renamed B42 method degrades to a default
     -- instead of throwing and killing the whole chat send.
@@ -321,21 +356,37 @@ local function buildYou(player)
         return it ~= nil and string.find(string.lower(it:getFullType()), needle, 1, true) ~= nil
     end
 
+    -- a weapon counts if it's in a hand, slung on the back, or in the bag
+    local function invWeapon()
+        local inv = player:getInventory()
+        local items = inv and inv:getItems()
+        if not items then return nil end
+        for i = 0, items:size() - 1 do
+            local it = items:get(i)
+            if it and it:IsWeapon() then return it end
+        end
+        return nil
+    end
+
     local you = { player = player }
-    you.female    = safe(function() return player:isFemale() end, false)
-    you.armed     = isWep(hand) or isWep(off)
-    you.weapon    = (isWep(hand) and hand:getName()) or (isWep(off) and off:getName()) or nil
-    you.health    = safe(function() return bd:getOverallBodyHealth() end, 100)    -- 0..100
-    you.injured   = you.health < 100
-    you.bleeding  = safe(function() return bd:getNumPartsBleeding() > 0 end, false)
-    you.infected  = safe(function() return bd:isInfected() end, false)
-    you.panic     = safe(function() return stats:getPanic() end, 0)               -- 0..100
-    you.panicking = you.panic > 40
-    you.drunk     = safe(function() return stats:getDrunkenness() end, 0) > 25
-    you.tired     = safe(function() return stats:getFatigue() end, 0) > 0.6       -- fatigue 0..1
-    you.kills     = safe(function() return player:getZombieKills() end, 0)
-    you.sneaking  = safe(function() return player:isSneaking() end, false)
-    you.running   = safe(function() return player:isRunning() end, false)
+    local mainWep = safe(function()
+        if isWep(hand) then return hand end
+        if isWep(off) then return off end
+        return invWeapon()
+    end, nil)
+
+    you.female   = safe(function() return player:isFemale() end, false)
+    you.armed    = mainWep ~= nil
+    you.weapon   = mainWep and mainWep:getName() or nil
+    you.health   = safe(function() return bd:getOverallBodyHealth() end, 100)    -- 0..100
+    you.injured  = you.health < 100
+    you.bleeding = safe(function() return bd:getNumPartsBleeding() > 0 end, false)
+    you.infected = safe(function() return bd:isInfected() end, false)
+    you.kills    = safe(function() return player:getZombieKills() end, 0)
+    you.sneaking = safe(function() return player:isSneaking() end, false)
+    you.running  = safe(function() return player:isRunning() end, false)
+    -- NOTE: panic/drunk/tired dropped - getPanic/getDrunkenness/getFatigue are
+    -- not exposed on the player's Stats in this B42 build (they threw nil).
 
     you.hasTrait = function(t) return player:hasTrait(t) end
     you.holding  = function(needle)             -- substring match on held items

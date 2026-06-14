@@ -368,6 +368,36 @@ add{ query={"wait","over","there"},   anim="Yes", action="GOTO" }
 add{ query={"move","over","there"},   anim="Yes", action="GOTO" }
 add{ query={"go","there"},            anim="Yes", action="GOTO" }
 
+-- ---- GETOUT: order squatters out of YOUR claimed home (no traits needed) ----
+-- Only does anything when the NPC is standing in your registered player base
+-- (i.e. a home you've claimed - e.g. via the Homestead mod). Then she stops
+-- squatting and walks out the nearest exit; once outside, the game turns her
+-- back into a wanderer. If it ISN'T your base, she just tells you off. See the
+-- GETOUT branch in the DISPATCHER for the actual behaviour.
+local evictTriggers = {
+    {"get","out","of","my","house"}, {"out","of","my","house"}, {"out","my","house"},
+    {"outta","my","house"}, {"leave","my","house"}, {"get","out","of","my","home"},
+    {"out","of","my","home"}, {"outta","my","home"}, {"leave","my","home"},
+    {"this","is","my","house"}, {"this","is","my","home"}, {"off","my","property"},
+    {"my","property"}, {"get","off","my","lawn"},
+}
+for _, q in ipairs(evictTriggers) do
+    add{ query=q, action="GETOUT", res="Alright - I'm going." }
+end
+
+-- ---- DISMISS: send a FOLLOWER away (un-joins + opens her a way out) ----------
+-- Overrides Week One's own "leave me" / "go away" so a dismissed follower walks
+-- out through your (locked) door cleanly instead of pacing at it. Non-followers
+-- just get a shrug. See the DISMISS branch in the DISPATCHER.
+local dismissTriggers = {
+    {"leave","me"}, {"go","away"}, {"dismissed"}, {"you","re","dismissed"},
+    {"you","are","dismissed"}, {"we","re","done"}, {"part","ways"},
+    {"take","off"}, {"on","your","way"}, {"get","lost"},
+}
+for _, q in ipairs(dismissTriggers) do
+    add{ query=q, action="DISMISS", res="Alright." }
+end
+
 -- ---- RESPONSES: the three patterns, demonstrated ---------------------------
 
 -- (1) RANDOM variety: a list -> a different line each time you ask.
@@ -887,6 +917,53 @@ local function equipGroundWeapon(bandit, brain, item, obj, sq)
     return true
 end
 
+-- Make a bandit leave the player's home ON FOOT and stop squatting: open AND
+-- unlock the nearest exterior door (the player's Homestead claim keys doors shut,
+-- which otherwise traps a plain Walker pacing at the door), then queue a LOCKED
+-- walk to just outside it. Once outside, the game flips her back into a wanderer.
+-- Shared by GETOUT (evicting a squatter) and DISMISS (sending a follower away).
+local function walkBanditOut(bandit, player)
+    local bx, by, bz = bandit:getX(), bandit:getY(), bandit:getZ()
+    local bsq = bandit:getCurrentSquare()
+    local def = bsq and bsq:getBuilding() and bsq:getBuilding():getDef()
+    local tx, ty = bx, by
+
+    if def then
+        -- open her a way out: nearest exterior door, unlocked + swung open
+        local door = BWOObjects and BWOObjects.FindExteriorDoor
+                     and BWOObjects.FindExteriorDoor(bandit, def)
+        if door then
+            pcall(function() door:setLockedByKey(false) end)
+            if not door:IsOpen() then pcall(function() door:ToggleDoorSilent() end) end
+            local s1, s2 = door:getSquare(), door:getOppositeSquare()
+            local outSq = (s1 and s1:isOutside() and s1) or (s2 and s2:isOutside() and s2)
+            if outSq then tx, ty = outSq:getX(), outSq:getY() end
+        end
+        if tx == bx and ty == by then
+            -- no usable door: aim a few tiles past the nearest wall instead
+            local x1, y1, x2, y2 = def:getX(), def:getY(), def:getX2(), def:getY2()
+            local dW, dE, dN, dS = bx - x1, x2 - bx, by - y1, y2 - by
+            local m, nearest = 4, math.min(dW, dE, dN, dS)
+            if     nearest == dW then tx = x1 - m
+            elseif nearest == dE then tx = x2 + m
+            elseif nearest == dN then ty = y1 - m
+            else                      ty = y2 + m end
+        end
+    else
+        tx, ty = bx + (bx - player:getX()), by + (by - player:getY())
+    end
+
+    Bandit.SetHostileP(bandit, false)
+    Bandit.SetProgram(bandit, "Walker", {})       -- un-joins a follower / stops squatting
+    Bandit.ClearTasks(bandit)
+    local dist = BanditUtils.DistTo(bx, by, tx, ty)
+    local moveTask = BanditUtils.GetMoveTask(0, tx, ty, bz, "Walk", dist, true)
+    moveTask.lock = true                          -- survive the program's ClearTasks
+    Bandit.AddTask(bandit, moveTask)
+    local b = BanditBrain.Get(bandit)
+    Bandit.ForceSyncPart(bandit, { id = b.id, program = b.program })
+end
+
 -- ----------------------------------------------------------------------------
 -- ACTION DISPATCHER. Returns handled(bool), optionalResponseOverride(string|nil)
 -- ----------------------------------------------------------------------------
@@ -928,6 +1005,50 @@ local function doAction(entry, ctx)
             return true, "I can't make that one work."
         end
         return true, ctx.pick({"Got it.", "Don't mind if I do.", "Now we're talking."})
+
+    elseif act == "GETOUT" then
+        -- Eviction only means something inside the player's claimed home: the NPC
+        -- must be standing in a registered player base (set when you claim a home).
+        -- Otherwise it isn't "your" house and she won't budge.
+        local inBase = BanditPlayerBase and BanditPlayerBase.GetBase
+                       and BanditPlayerBase.GetBase(bandit)
+        if not inBase then
+            return true, ctx.pick({
+                "This isn't your house. I'll stand where I please.",
+                "Your place? I don't see your name on the deed.",
+                "Funny - I don't recall this being yours." })
+        end
+        if ctx.role == "Babe" then          -- she's with you: "get out" isn't dismiss
+            return true, ctx.pick({
+                "Leave? But I'm with you... say 'go away' if you really mean it.",
+                "You want ME to go? Just tell me to leave and I will." })
+        end
+        if brain.hostile then return true, nil end   -- past talking
+
+        walkBanditOut(bandit, ctx.player)
+        return true, ctx.pick({
+            "Alright, alright - I'm going. Didn't mean to impose.",
+            "Fine. Your place, your rules. I'll find somewhere else.",
+            "Okay, no need to get heated. I'm out.",
+            "Didn't realize someone had claimed it. I'll go.",
+            "Easy - I'm leaving. Wasn't looking for trouble." })
+
+    elseif act == "DISMISS" then
+        -- Send a follower away cleanly. Overrides Week One's own "leave me" so she
+        -- walks out through your (locked) door instead of pacing at it.
+        if ctx.role ~= "Babe" then
+            return true, ctx.pick({
+                "I'm not following you anyway.",
+                "We weren't travelling together, but alright." })
+        end
+        brain.permanent = false
+        brain.loyal = false
+        walkBanditOut(bandit, ctx.player)
+        return true, ctx.pick({
+            "Alright - take care of yourself out there.",
+            "Understood. I'll make my own way from here.",
+            "Okay. Thanks for everything - I'll go.",
+            "If that's what you want. Stay safe." })
     end
 
     return false, nil

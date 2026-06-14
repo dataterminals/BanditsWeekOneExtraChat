@@ -93,14 +93,40 @@ end
 --   (3) an explicit invite ("c'mon", "come along") is what finally - eagerly -
 --       makes her join (action=JOIN).
 -- Sincere throughout, so the female sass layer is skipped (nosass).
+-- B42's hasTrait() takes a CharacterTrait OBJECT, never a string. Custom Bandits
+-- traits live on BWORegistries (registered as "BWO:charming" etc.); vanilla ones
+-- are static CharacterTrait constants. Resolve name -> object lazily (these
+-- globals only exist once in-world) and cache positives. Returns nil if not yet
+-- resolvable, so callers fail safe instead of throwing on every tick.
+local traitCache = {}
+local function resolveTrait(name)
+    local cached = traitCache[name]
+    if cached then return cached end
+    local obj
+    local reg = BWORegistries and BWORegistries.CharacterTraits
+    local key = tostring(name):lower()
+    if     reg and key == "charming"    then obj = reg.CHARMING
+    elseif reg and key == "magnetizing" then obj = reg.MAGNETIZING
+    elseif reg and key == "ugly"        then obj = reg.UGLY
+    elseif key == "brave"               then obj = CharacterTrait and CharacterTrait.BRAVE
+    elseif CharacterTrait and ResourceLocation then
+        -- best effort for any other vanilla trait a content line might name
+        local ok, t = pcall(function() return CharacterTrait.get(ResourceLocation.of(name)) end)
+        if ok then obj = t end
+    end
+    if obj then traitCache[name] = obj end   -- cache positives only; the registry
+    return obj                               -- may simply not be loaded yet
+end
+
 local CAPTIVATE_TRAITS = { "charming", "magnetizing", "Brave" }
 -- The PLAYER half of the gate, factored out so the proximity-bark engine (far
 -- below) can reuse it without building a full chat ctx: a female player wearing
 -- all three traits.
 local function playerCanCaptivate(player)
     if not player or not player:isFemale() then return false end
-    for _, t in ipairs(CAPTIVATE_TRAITS) do
-        if not player:hasTrait(t) then return false end
+    for _, name in ipairs(CAPTIVATE_TRAITS) do
+        local t = resolveTrait(name)
+        if not t or not player:hasTrait(t) then return false end
     end
     return true
 end
@@ -692,7 +718,11 @@ local function buildYou(player)
     -- NOTE: panic/drunk/tired dropped - getPanic/getDrunkenness/getFatigue are
     -- not exposed on the player's Stats in this B42 build (they threw nil).
 
-    you.hasTrait = function(t) return player:hasTrait(t) end
+    you.hasTrait = function(t)              -- accepts a trait NAME (string) and
+        local obj = resolveTrait(t)         -- resolves it to a B42 CharacterTrait
+        if not obj then return false end
+        return player:hasTrait(obj)
+    end
     you.holding  = function(needle)             -- substring match on held items
         needle = string.lower(needle)
         return typeHas(hand, needle) or typeHas(off, needle)

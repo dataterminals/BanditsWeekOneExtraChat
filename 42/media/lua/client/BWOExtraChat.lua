@@ -630,14 +630,16 @@ end
 -- in `barkLines` up in the content section; the four knobs here are behaviour
 -- and are all safe to tune after seeing it in-game.
 --
--- "Once per approach" is approximated cheaply: a per-NPC cooldown stops the same
--- survivor repeating, and a global gap keeps two NPCs from barking on top of
--- each other. We only ever inspect the single CLOSEST NPC each scan.
+-- She must also be in the SAME SPACE as the player (both outside, or the same
+-- room) with a clear line of sight - so she never barks through a wall or out a
+-- window at someone in the street. "Once per approach" is approximated cheaply:
+-- a per-NPC cooldown stops the same survivor repeating, and a global gap keeps
+-- two NPCs barking on top of each other. We only inspect the single CLOSEST NPC.
 -- ----------------------------------------------------------------------------
 local BARK_RANGE        = 6        -- tiles: how close before she speaks
 local BARK_SCAN_MS      = 1000     -- real ms between proximity scans (throttle)
-local BARK_NPC_COOLDOWN = 45000    -- real ms before the SAME NPC barks again
-local BARK_GLOBAL_GAP   = 6000     -- real ms minimum gap between ANY two barks
+local BARK_NPC_COOLDOWN = 120000   -- real ms before the SAME NPC barks again
+local BARK_GLOBAL_GAP   = 18000    -- real ms minimum gap between ANY two barks
 
 local barkNextOk       = {}   -- [bandit id] -> earliest real-ms it may bark again
 local barkGlobalNextOk = 0
@@ -660,6 +662,20 @@ local function proximityBark(player)
     local brain = BanditBrain.Get(bandit)
     if not brain or not brain.female or brain.hostile then return end
     if now < (barkNextOk[t.id] or 0) then return end
+
+    -- Same-space + line of sight: she only speaks up when you're genuinely
+    -- TOGETHER. getRoom() is nil outdoors, so this one compare means "same room,
+    -- or both outside" - and rejects the immersion-breaker the player flagged: an
+    -- NPC holed up inside leaning out a window to a stranger in the street (her
+    -- room vs the player's nil). getCanSee then blocks a solid wall between two
+    -- outdoor squares, and folds in the player's vision so she won't pipe up from
+    -- off-screen behind you. Checked last, so a blocked attempt doesn't burn her
+    -- cooldown.
+    local sq  = bandit:getCurrentSquare()
+    local psq = player:getCurrentSquare()
+    if not sq or not psq then return end
+    if sq:getRoom() ~= psq:getRoom() then return end           -- not the same space
+    if not sq:getCanSee(player:getPlayerNum()) then return end  -- wall between us
 
     bandit:addLineChatElement(BanditUtils.Choice(barkLines), 0, 1, 0)
     barkNextOk[t.id]   = now + BARK_NPC_COOLDOWN

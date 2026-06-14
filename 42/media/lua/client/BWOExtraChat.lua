@@ -270,6 +270,34 @@ local barkLines = {
     "I'd follow you out of here in a heartbeat, if you asked me to.",
 }
 
+-- Follower CAR-ENTRY barks: when a follower runs to your car and climbs in. Our
+-- override of Week One's Babe program (see ENGINE) emits these instead of its two
+-- hardcoded lines, throttled so the "wait" line doesn't repeat every tick. A
+-- captivating player gets the warmer pools. Edit freely.
+local carRunLines = {              -- running to catch the car
+    "Wait for me!", "Hold on - I'm coming!", "Don't leave without me!",
+    "Right behind you - give me a second!", "Coming, coming!",
+    "Wait up! I'm getting in.",
+}
+local carRunLinesCaptivated = {
+    "Wait for me - don't you dare drive off without me!",
+    "I'm coming! You're not going anywhere without me.",
+    "Right behind you, always - hold on!",
+    "Give me a second - I'd run a lot further than this for you.",
+    "Coming! Wherever you're headed, I'm headed.",
+}
+local carInLines = {               -- seated and ready
+    "I'm in!", "Okay, let's roll.", "Buckled up - go.",
+    "Got it, I'm in. Drive.", "All set.", "In! Let's move.",
+}
+local carInLinesCaptivated = {
+    "I'm in - and right where I want to be.",
+    "All yours. Drive us anywhere.",
+    "In. Honestly? I love riding beside you.",
+    "Settled in next to you. Let's go - together.",
+    "Buckled up beside you. Lead on.",
+}
+
 -- Generic realistic versions of those questions (when not captivated)
 add{ query={"how","are","you"},         res=moodRealistic }
 add{ query={"are","you","okay"},        res=moodRealistic }
@@ -397,6 +425,70 @@ local dismissTriggers = {
 for _, q in ipairs(dismissTriggers) do
     add{ query=q, action="DISMISS", res="Alright." }
 end
+
+-- ---- FOLLOWER GEAR: control what a follower wields and carries (Babe only) ---
+-- All six route through dispatcher branches that gate on ctx.role == "Babe".
+-- GEAR (equip/holster/switch) parses the message; the rest are direct.
+
+-- equip / draw / switch / holster
+local gearTriggers = {
+    {"draw","your","weapon"}, {"draw","your","gun"}, {"draw","your","pistol"},
+    {"draw","your","rifle"}, {"draw","your","melee"}, {"draw","your","knife"},
+    {"draw","your","blade"}, {"weapons","out"}, {"weapon","out"}, {"ready","up"},
+    {"ready","your","weapon"}, {"arm","up"}, {"gear","up"}, {"equip","your"},
+    {"equip","the"}, {"equip","a"}, {"wield","your"}, {"use","your","gun"},
+    {"use","your","rifle"}, {"use","your","pistol"}, {"use","your","shotgun"},
+    {"use","your","melee"}, {"use","your","knife"}, {"use","your","fists"},
+    {"switch","to","your","gun"}, {"switch","to","your","rifle"},
+    {"switch","to","your","pistol"}, {"switch","to","melee"},
+    {"switch","to","your","melee"}, {"pull","out","your"},
+    {"put","it","away"}, {"put","that","away"}, {"put","your","weapon","away"},
+    {"weapons","down"}, {"weapon","down"}, {"lower","your","weapon"},
+    {"stand","down"}, {"at","ease"}, {"holster","it"}, {"holster","your","weapon"},
+    {"go","barehanded"},
+}
+for _, q in ipairs(gearTriggers) do add{ query=q, action="GEAR", res="Okay." } end
+
+-- ARM: hand the follower the weapon in YOUR hand (added before CARRY so
+-- "take this gun" wins over the bare "take this")
+local armTriggers = {
+    {"use","this"}, {"use","this","one"}, {"wield","this"}, {"here","use","this"},
+    {"take","this","gun"}, {"take","this","weapon"}, {"equip","this"},
+    {"use","this","instead"}, {"try","this","one"},
+}
+for _, q in ipairs(armTriggers) do add{ query=q, action="ARM", res="Okay." } end
+
+-- DISARM: take the follower's weapon (she drops it for you)
+local disarmTriggers = {
+    {"give","me","your","gun"}, {"give","me","your","weapon"}, {"give","me","your","rifle"},
+    {"give","me","your","pistol"}, {"hand","over","your","weapon"}, {"hand","over","your","gun"},
+    {"hand","me","your","weapon"}, {"drop","your","weapon"}, {"drop","your","gun"}, {"disarm"},
+}
+for _, q in ipairs(disarmTriggers) do add{ query=q, action="DISARM", res="Okay." } end
+
+-- CARRY: stash the item in your hand into her bag
+local carryTriggers = {
+    {"hold","this"}, {"carry","this"}, {"hold","onto","this"}, {"hold","this","for","me"},
+    {"carry","this","for","me"}, {"can","you","hold","this"}, {"can","you","carry","this"},
+    {"take","this"}, {"hold","it","for","me"},
+}
+for _, q in ipairs(carryTriggers) do add{ query=q, action="CARRY", res="Okay." } end
+
+-- BAGCHECK: list what she's carrying
+local bagTriggers = {
+    {"what","s","in","your","bag"}, {"what","is","in","your","bag"}, {"in","your","bag"},
+    {"check","your","bag"}, {"your","inventory"}, {"show","me","your","inventory"},
+    {"what","supplies","do","you","have"}, {"got","any","supplies"}, {"what","s","in","your","pack"},
+}
+for _, q in ipairs(bagTriggers) do add{ query=q, action="BAGCHECK", res="Okay." } end
+
+-- DROPALL: dump her whole bag at her feet
+local dropTriggers = {
+    {"drop","everything"}, {"drop","it","all"}, {"empty","your","bag"}, {"empty","your","pockets"},
+    {"hand","over","everything"}, {"give","me","everything"}, {"drop","your","stuff"},
+    {"drop","the","loot"}, {"drop","your","gear"},
+}
+for _, q in ipairs(dropTriggers) do add{ query=q, action="DROPALL", res="Okay." } end
 
 -- ---- RESPONSES: the three patterns, demonstrated ---------------------------
 
@@ -682,6 +774,7 @@ local function proximityBark(player)
     barkNextScan = now + BARK_SCAN_MS
 
     if not playerCanCaptivate(player) then return end -- cheap gate, bail early
+    if player:getVehicle() then return end            -- not while you're driving past
     if now < barkGlobalNextOk then return end
 
     local t = BanditUtils.GetClosestBanditLocationProgram(player, TARGET_PROGRAMS)
@@ -710,6 +803,60 @@ local function proximityBark(player)
     bandit:addLineChatElement(BanditUtils.Choice(barkLines), 0, 1, 0)
     barkNextOk[t.id]   = now + BARK_NPC_COOLDOWN
     barkGlobalNextOk   = now + BARK_GLOBAL_GAP
+end
+
+-- ----------------------------------------------------------------------------
+-- FOLLOWER CAR ENTRY: a follower (Babe) hops into your car when you're driving.
+-- Week One's Babe program already does this, but with two hardcoded lines and
+-- "Wait for me!" spammed every tick. We override ONLY that car block (varied +
+-- throttled + captivating-aware barks) and delegate everything else - following,
+-- combat, idle - to the original program. Installed at game start.
+-- ----------------------------------------------------------------------------
+local origBabeMain
+local carBarkNextOk = {}     -- [bandit id] -> next real-ms it may say a "wait" line
+
+-- Returns a program-result table if it handled the car-entry case, else nil.
+local function babeCarEntry(bandit)
+    local master  = BanditPlayer.GetMasterPlayer(bandit)
+    local vehicle = master and master:getVehicle()
+    if not (master and vehicle and vehicle:isDriver(master)) then return nil end
+    local pos = BanditUtils.GetSeatPosition(vehicle, 1)   -- front passenger seat
+    if not pos then return nil end
+
+    local d = BanditUtils.DistTo(bandit:getX(), bandit:getY(), pos.x, pos.y)
+    local captivated = playerCanCaptivate(master)
+    local brain = BanditBrain.Get(bandit)
+
+    if d < 1 then
+        -- climb in (mirrors Week One's fake-passenger handling)
+        if brain then
+            brain.vehicleId = vehicle:getId()
+            Bandit.ForceSyncPart(bandit, brain)
+            vehicle:getModData().passengerId = brain.id
+            carBarkNextOk[brain.id] = nil
+        end
+        bandit:addLineChatElement(BanditUtils.Choice(captivated and carInLinesCaptivated or carInLines), 0, 1, 0)
+        master:playSound("VehicleDoorOpen")
+        bandit:removeFromSquare()
+        bandit:removeFromWorld()
+        return { status=true, next="Main", tasks={} }
+    else
+        -- still running for it - say a "wait" line, but throttled (not every tick)
+        local id = brain and brain.id
+        local now = getTimestampMs()
+        if id and now >= (carBarkNextOk[id] or 0) then
+            bandit:addLineChatElement(BanditUtils.Choice(captivated and carRunLinesCaptivated or carRunLines), 0, 1, 0)
+            carBarkNextOk[id] = now + 3000
+        end
+        return { status=true, next="Main", tasks={ BanditUtils.GetMoveTask(-0.07, pos.x, pos.y, pos.z, "Run", d) } }
+    end
+end
+
+-- The replacement Babe.Main: try our car-entry (guarded); otherwise the original.
+local function babeMainEnhanced(bandit)
+    local ok, res = pcall(babeCarEntry, bandit)
+    if ok and res then return res end
+    return origBabeMain(bandit)
 end
 
 -- Pre-compute the PLAYER's status and equipment into a tidy bundle, so flavour
@@ -964,6 +1111,53 @@ local function walkBanditOut(bandit, player)
     Bandit.ForceSyncPart(bandit, { id = b.id, program = b.program })
 end
 
+-- Does the player's message name one of this NPC's actual weapons (slots or
+-- bag)? Returns the matching itemType, so "equip the winchester" / "draw the axe"
+-- find the right gun even when it isn't a generic gun/melee keyword.
+local function matchNamedWeapon(said, weapons, bandit)
+    local cand = {}
+    if weapons.primary   and weapons.primary.name   then cand[#cand+1] = weapons.primary.name end
+    if weapons.secondary and weapons.secondary.name then cand[#cand+1] = weapons.secondary.name end
+    if weapons.melee and weapons.melee ~= "Base.BareHands" then cand[#cand+1] = weapons.melee end
+    local inv = bandit:getInventory()
+    local items = inv and inv:getItems()
+    if items then
+        for i = 0, items:size() - 1 do
+            local it = items:get(i)
+            if it and it:IsWeapon() then cand[#cand+1] = it:getFullType() end
+        end
+    end
+    for _, ft in ipairs(cand) do
+        for word in (prettyItem(ft) or ""):lower():gmatch("%a+") do
+            if #word > 2 and said:find(word, 1, true) then return ft end
+        end
+    end
+    return nil
+end
+
+-- Make a weapon ITEM the bandit's weapon (slot chosen by type) and draw it.
+-- Returns the itemType on success. Mirrors equipGroundWeapon's slot logic.
+local function armBanditWith(bandit, brain, item)
+    if not (item and item:IsWeapon()) then return nil end
+    local weapons = Bandit.GetWeapons(bandit)
+    if not weapons then return nil end
+    local wt = WeaponType.getWeaponType(item)
+    local itemType = item:getFullType()
+    if wt == WeaponType.FIREARM or wt == WeaponType.HANDGUN then
+        local slot = (wt == WeaponType.FIREARM) and "primary" or "secondary"
+        local made = BanditWeapons.Make(itemType, 1)
+        if not made then return nil end
+        weapons[slot] = made
+    else
+        weapons.melee = itemType
+    end
+    Bandit.SetWeapons(bandit, weapons)
+    Bandit.ForceSyncPart(bandit, { id = brain.id, weapons = weapons })
+    Bandit.ClearTasks(bandit)
+    Bandit.AddTask(bandit, { action="Equip", itemPrimary=itemType })
+    return itemType
+end
+
 -- ----------------------------------------------------------------------------
 -- ACTION DISPATCHER. Returns handled(bool), optionalResponseOverride(string|nil)
 -- ----------------------------------------------------------------------------
@@ -1049,6 +1243,149 @@ local function doAction(entry, ctx)
             "Understood. I'll make my own way from here.",
             "Okay. Thanks for everything - I'll go.",
             "If that's what you want. Stay safe." })
+
+    elseif act == "GEAR" then
+        -- Equip / holster / switch weapons. Parses the message to decide.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local s = ctx.said or ""
+        local weapons = Bandit.GetWeapons(bandit) or {}
+        -- holster / put away / barehanded
+        if s:find("away") or s:find("down") or s:find("holster") or s:find("sheath")
+           or s:find("at ease") or s:find("lower") or s:find("fist") or s:find("barehand") then
+            local held = bandit:getVariableString("BanditPrimary")
+            if not held or held == "" or held == "Base.BareHands" then
+                return true, "Already empty-handed."
+            end
+            Bandit.ClearTasks(bandit)
+            Bandit.AddTask(bandit, { action="Unequip", itemPrimary=held })
+            return true, ctx.pick({ "Lowering it.", "Weapon away.", "At ease." })
+        end
+        -- equip: pick a weapon by keyword, named item, or best
+        local prim = weapons.primary and weapons.primary.name
+        local sec  = weapons.secondary and weapons.secondary.name
+        local mel  = weapons.melee
+        if mel == "Base.BareHands" then mel = nil end
+        local pick
+        if s:find("pistol") or s:find("handgun") or s:find("sidearm") or s:find("revolver") then
+            pick = sec
+        elseif s:find("rifle") or s:find("shotgun") or s:find("firearm") or s:find("gun") or s:find("shoot") then
+            pick = prim or sec
+        elseif s:find("melee") or s:find("knife") or s:find("blade") or s:find("axe")
+            or s:find("bat") or s:find("machete") or s:find("hammer") or s:find("spear")
+            or s:find("club") or s:find("crowbar") then
+            pick = mel
+        else
+            pick = matchNamedWeapon(s, weapons, bandit) or Bandit.GetBestWeapon(bandit)
+        end
+        if not pick or pick == "Base.BareHands" then
+            return true, ctx.pick({ "I've nothing like that on me.", "Nothing to draw, sorry." })
+        end
+        Bandit.ClearTasks(bandit)
+        Bandit.AddTask(bandit, { action="Equip", itemPrimary=pick })
+        local nm = prettyItem(pick) or "it"
+        return true, ctx.pick({ nm .. " out.", "Drawing my " .. nm .. ".", nm .. " ready." })
+
+    elseif act == "ARM" then
+        -- Take the weapon in the player's hand and make it the NPC's weapon.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local item = ctx.player:getPrimaryHandItem() or ctx.player:getSecondaryHandItem()
+        if not item then return true, "Hand me what? Your hands are empty." end
+        if not item:IsWeapon() then return true, "That's not a weapon I can use." end
+        local itemType = armBanditWith(bandit, brain, item)
+        if not itemType then return true, "I can't make that one work." end
+        pcall(function()
+            if ctx.player:getPrimaryHandItem() == item then ctx.player:setPrimaryHandItem(nil) end
+            if ctx.player:getSecondaryHandItem() == item then ctx.player:setSecondaryHandItem(nil) end
+            local src = item:getContainer() or ctx.player:getInventory()
+            src:DoRemoveItem(item)
+        end)
+        local nm = prettyItem(itemType) or "it"
+        return true, ctx.pick({ "Thanks - " .. nm .. " it is.", nm .. ", I'll put it to use.", "Good. " .. nm .. " ready." })
+
+    elseif act == "DISARM" then
+        -- Hand the NPC's weapon over to the player (dropped at her feet).
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local weapons = Bandit.GetWeapons(bandit) or {}
+        local s = ctx.said or ""
+        local slot, itemType
+        if (s:find("pistol") or s:find("handgun") or s:find("sidearm")) and weapons.secondary and weapons.secondary.name then
+            slot, itemType = "secondary", weapons.secondary.name
+        elseif (s:find("rifle") or s:find("gun") or s:find("firearm")) and weapons.primary and weapons.primary.name then
+            slot, itemType = "primary", weapons.primary.name
+        elseif weapons.primary and weapons.primary.name then
+            slot, itemType = "primary", weapons.primary.name
+        elseif weapons.secondary and weapons.secondary.name then
+            slot, itemType = "secondary", weapons.secondary.name
+        elseif weapons.melee and weapons.melee ~= "Base.BareHands" then
+            slot, itemType = "melee", weapons.melee
+        end
+        if not itemType then return true, "I've no weapon to give you." end
+        Bandit.ClearTasks(bandit)
+        Bandit.AddTask(bandit, { action="Drop", anim="Loot", itemType=itemType, time=150 })
+        if slot == "melee" then
+            weapons.melee = "Base.BareHands"
+        else
+            weapons[slot].name = nil
+            weapons[slot].bulletsLeft = 0
+        end
+        Bandit.SetWeapons(bandit, weapons)
+        Bandit.ForceSyncPart(bandit, { id = brain.id, weapons = weapons })
+        return true, ctx.pick({ "Here - take it.", "It's yours.", "Fine. Have it." })
+
+    elseif act == "CARRY" then
+        -- Move the item in the player's hand into the NPC's bag (pack mule).
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local item = ctx.player:getPrimaryHandItem()
+        if item then ctx.player:setPrimaryHandItem(nil)
+        else item = ctx.player:getSecondaryHandItem(); if item then ctx.player:setSecondaryHandItem(nil) end end
+        if not item then return true, "Hold what? Your hands are empty." end
+        local ok = pcall(function()
+            local src = item:getContainer() or ctx.player:getInventory()
+            src:DoRemoveItem(item)
+            bandit:getInventory():AddItem(item)
+            Bandit.UpdateItemsToSpawnAtDeath(bandit, brain)
+        end)
+        if not ok then return true, "I couldn't take that, sorry." end
+        return true, ctx.pick({ "Got it - I'll carry it.", "On me. It's safe.", "I've got it." })
+
+    elseif act == "BAGCHECK" then
+        -- Read out what the NPC is carrying in their inventory.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local inv = bandit:getInventory()
+        local items = inv and inv:getItems()
+        local counts, order = {}, {}
+        if items then
+            for i = 0, items:size() - 1 do
+                local nm = items:get(i):getName()
+                if not counts[nm] then counts[nm] = 0; order[#order+1] = nm end
+                counts[nm] = counts[nm] + 1
+            end
+        end
+        if #order == 0 then return true, ctx.pick({ "Nothing but lint, I'm afraid.", "My pockets are empty." }) end
+        local parts = {}
+        for _, nm in ipairs(order) do
+            parts[#parts+1] = (counts[nm] > 1 and (counts[nm] .. "x ") or "") .. nm
+            if #parts >= 8 then parts[#parts+1] = "..."; break end
+        end
+        return true, "I've got: " .. table.concat(parts, ", ") .. "."
+
+    elseif act == "DROPALL" then
+        -- Dump the NPC's whole inventory onto their tile.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local inv = bandit:getInventory()
+        local items = inv and inv:getItems()
+        local sq = bandit:getCurrentSquare()
+        local n = 0
+        if items and sq then
+            for i = items:size() - 1, 0, -1 do
+                local it = items:get(i)
+                pcall(function() inv:Remove(it); sq:AddWorldInventoryItem(it, 0.0, 0.0, 0.0) end)
+                n = n + 1
+            end
+        end
+        Bandit.UpdateItemsToSpawnAtDeath(bandit, brain)
+        if n == 0 then return true, "I've nothing to drop." end
+        return true, ctx.pick({ "There - all of it.", "Dropped. Take what you need.", "It's all yours." })
     end
 
     return false, nil
@@ -1059,20 +1396,77 @@ end
 -- ----------------------------------------------------------------------------
 local origSay
 
+-- Does cm/cm2 satisfy ANY of these trigger word-lists? (same rule as the matcher)
+local function matchesAny(cm, cm2, triggers)
+    for _, q in ipairs(triggers) do
+        local all = true
+        for _, word in ipairs(q) do
+            if not cm:hasword(word) and not cm2:hasword(word) then all = false; break end
+        end
+        if all then return true end
+    end
+    return false
+end
+
+-- Restore a (world-removed) vehicle passenger beside the car via Week One's own
+-- Spawner/Restore path, already converted to a Walker so she's dismissed and
+-- won't just climb back in. Returns true if a passenger record was found.
+local function restoreAndDismissPassenger(player, vehicle, pid)
+    local gmd = GetBanditClusterData(pid)
+    if not (gmd and gmd[pid]) then
+        vehicle:getModData().passengerId = nil    -- stale record; clear it
+        return false
+    end
+    local pos = BanditUtils.GetSeatPosition(vehicle, 1)
+    if pos then gmd[pid].bornCoords = { x = pos.x, y = pos.y, z = pos.z } end
+    gmd[pid].vehicleId = nil
+    gmd[pid].permanent = false
+    gmd[pid].loyal     = false
+    gmd[pid].program   = { name = "Walker", stage = "Prepare" }   -- un-joined
+    sendClientCommand(player, 'Spawner', 'Restore', gmd[pid])
+    vehicle:getModData().passengerId = nil
+    return true
+end
+
+-- A follower RIDING in the car is removed from the world (fake passenger), so
+-- getTarget can't see them. If the driver says a dismiss phrase, handle it here:
+-- respawn her beside the car, already dismissed. (An OUTSIDE follower is a normal
+-- target and goes through the usual DISMISS branch.)
+local function tryVehiclePassengerCommand(player, cm, cm2, chatMessage, quiet)
+    local vehicle = player:getVehicle()
+    if not vehicle then return false end
+    local pid = vehicle:getModData().passengerId
+    if not pid then return false end
+    if not matchesAny(cm, cm2, dismissTriggers) then return false end
+    if not quiet then
+        local c = player:getSpeakColour()
+        player:addLineChatElement(chatMessage, c:getR(), c:getG(), c:getB())
+    end
+    restoreAndDismissPassenger(player, vehicle, pid)
+    return true   -- we own this command either way (stale state is cleared)
+end
+
 -- Runs our custom matching/handling. Returns true if it handled the message.
 local function tryCustom(player, chatMessage, quiet)
-    -- No NPC in range -> nothing we can do; let vanilla print the player line.
-    local bandit, brain = getTarget(player)
-    if not bandit then return false end
-    local ctx = buildCtx(player, bandit, brain)
-
-    -- Build raw + lemmatised copies of the message (same as vanilla).
+    -- Build raw + lemmatised copies up front (the seated-passenger pre-check and
+    -- the main matcher both need them).
     local cm = chatMessage:lower()
     local cm2 = ""
     for word in cm:gmatch("%S+") do
         local w = Lemmats and Lemmats.EN and Lemmats.EN[word]
         if w then cm2 = cm2 .. w .. " " end
     end
+
+    -- A follower riding in your car is removed from the world, so getTarget can't
+    -- find them. Dismiss the seated passenger here, before targeting.
+    if tryVehiclePassengerCommand(player, cm, cm2, chatMessage, quiet) then
+        return true
+    end
+
+    -- No NPC in range -> nothing we can do; let vanilla print the player line.
+    local bandit, brain = getTarget(player)
+    if not bandit then return false end
+    local ctx = buildCtx(player, bandit, brain)
     ctx.said = cm    -- raw lowercased message, so res-functions can inspect it
     ctx.lemma = cm2  -- lemmatised message
 
@@ -1145,7 +1539,15 @@ local function install()
     -- proximity barks: same defensive style as the chat wrapper - never let a
     -- per-frame error spill into the log, just skip that tick.
     Events.OnPlayerUpdate.Add(function(player) pcall(proximityBark, player) end)
-    print("[BWOExtraChat] installed - " .. #data .. " custom phrases active (+ proximity barks).")
+
+    -- enhance follower car-entry barks (override only the Babe car block)
+    if ZombiePrograms and ZombiePrograms.Babe and type(ZombiePrograms.Babe.Main) == "function"
+       and not ZombiePrograms.Babe.__extraChatCarBarks then
+        origBabeMain = ZombiePrograms.Babe.Main
+        ZombiePrograms.Babe.Main = babeMainEnhanced
+        ZombiePrograms.Babe.__extraChatCarBarks = true
+    end
+    print("[BWOExtraChat] installed - " .. #data .. " custom phrases active (+ proximity barks, car barks).")
 end
 
 Events.OnGameStart.Add(install)

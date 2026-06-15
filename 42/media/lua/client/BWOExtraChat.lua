@@ -490,6 +490,17 @@ local dropTriggers = {
 }
 for _, q in ipairs(dropTriggers) do add{ query=q, action="DROPALL", res="Okay." } end
 
+-- WEAR: swap her into clothing you've dropped beside her (slot inferred from the
+-- item; whatever she had in that slot is dropped). Clothing can't be hand-given,
+-- so it must be on the ground - if nothing's there she'll ask you for it.
+local wearTriggers = {
+    {"wear","this"}, {"wear","these"}, {"wear","that"}, {"put","this","on"},
+    {"put","these","on"}, {"put","that","on"}, {"put","on","this"},
+    {"try","this","on"}, {"change","into","this"}, {"get","dressed"},
+    {"change","your","clothes"}, {"change","clothes"}, {"swap","clothes"},
+}
+for _, q in ipairs(wearTriggers) do add{ query=q, action="WEAR", res="Okay." } end
+
 -- ---- RESPONSES: the three patterns, demonstrated ---------------------------
 
 -- (1) RANDOM variety: a list -> a different line each time you ask.
@@ -1064,6 +1075,45 @@ local function equipGroundWeapon(bandit, brain, item, obj, sq)
     return true
 end
 
+-- Strip a loose world item off a square (same sequence equipGroundWeapon uses).
+local function removeWorldItem(sq, obj, item)
+    sq:removeWorldObject(obj)
+    sq:transmitRemoveItemFromSquare(obj)
+    sq:RecalcProperties()
+    sq:RecalcAllWithNeighbours(true)
+    obj:removeFromWorld()
+    obj:removeFromSquare()
+    obj:setSquare(nil)
+    item:setWorldItem(nil)
+end
+
+-- All loose CLOTHING items lying within `radius` tiles of the NPC. Returns a
+-- list of { item=, obj=, sq=, loc= } where loc is the body-location string.
+local function findGroundClothing(bandit, radius)
+    local cell = getCell()
+    local bx, by, bz = math.floor(bandit:getX()), math.floor(bandit:getY()), math.floor(bandit:getZ())
+    local found = {}
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local sq = cell:getGridSquare(bx + dx, by + dy, bz)
+            if sq then
+                local wobs = sq:getWorldObjects()
+                for i = 0, wobs:size() - 1 do
+                    local obj = wobs:get(i)
+                    local item = obj:getItem()
+                    if item and instanceof(item, "Clothing") then
+                        local loc = item:getBodyLocation()
+                        if loc and loc ~= "" then
+                            found[#found + 1] = { item = item, obj = obj, sq = sq, loc = loc }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return found
+end
+
 -- Make a bandit leave the player's home ON FOOT and stop squatting: open AND
 -- unlock the nearest exterior door (the player's Homestead claim keys doors shut,
 -- which otherwise traps a plain Walker pacing at the door), then queue a LOCKED
@@ -1395,6 +1445,44 @@ local function doAction(entry, ctx)
         Bandit.UpdateItemsToSpawnAtDeath(bandit, brain)
         if n == 0 then return true, "I've nothing to drop." end
         return true, ctx.pick({ "There - all of it.", "Dropped. Take what you need.", "It's all yours." })
+
+    elseif act == "WEAR" then
+        -- Swap a follower into clothing the player dropped beside her. Clothing
+        -- isn't hand-equippable (unlike ARM), so it must come off the ground.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local found = findGroundClothing(bandit, 2)
+        if #found == 0 then
+            return true, ctx.pick({
+                "Wear what? Drop something by me and I'll put it on.",
+                "I don't see anything to change into - set it at my feet.",
+                "Hand me an outfit first; drop it here and I'll swap." })
+        end
+        brain.clothing = brain.clothing or {}
+        brain.tint     = brain.tint or {}
+        local sq = bandit:getCurrentSquare()
+        local changed = 0
+        for _, c in ipairs(found) do
+            -- drop whatever she's wearing in that slot first, so it's a true swap
+            local old = brain.clothing[c.loc]
+            if old and sq then
+                local oldItem = BanditCompatibility.InstanceItem(old)
+                if oldItem then
+                    sq:AddWorldInventoryItem(oldItem, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0)
+                end
+            end
+            brain.clothing[c.loc] = c.item:getFullType()
+            brain.tint[c.loc]     = nil            -- render in the item's own colour
+            removeWorldItem(c.sq, c.obj, c.item)
+            changed = changed + 1
+        end
+        if changed == 0 then return true, "That's not something I can wear." end
+        Bandit.ClearTasks(bandit)
+        Bandit.AddTask(bandit, { action="TimeEvent", anim="Loot",
+            x=bandit:getX(), y=bandit:getY(), z=bandit:getZ(), time=300 })
+        Bandit.ApplyVisuals(bandit, brain)
+        Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
+        return true, ctx.pick({ "There - how do I look?", "Better. Thanks for this.",
+            "Good fit, I'll keep it on.", "Mm, much better. Thank you." })
     end
 
     return false, nil

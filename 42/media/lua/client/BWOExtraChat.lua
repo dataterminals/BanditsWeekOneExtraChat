@@ -1328,6 +1328,15 @@ local function doAction(entry, ctx)
             weapons[slot].name = nil
             weapons[slot].bulletsLeft = 0
         end
+        -- If she's actually WIELDING this weapon, clear the hand model too.
+        -- Bandit.SetWeapons only updates the loadout (brain.weapons); the held
+        -- item is a separate model (setPrimaryHandItem / BanditPrimary var). Skip
+        -- this and the Drop task spawns a ground copy while she keeps the one in
+        -- her hands = the duplication. (A holstered weapon she isn't holding is
+        -- left as-is, which is correct - only the drawn weapon is handed over.)
+        if bandit:getVariableString("BanditPrimary") == itemType then
+            Bandit.SetHands(bandit, "Base.BareHands")
+        end
         Bandit.SetWeapons(bandit, weapons)
         Bandit.ForceSyncPart(bandit, { id = brain.id, weapons = weapons })
         return true, ctx.pick({ "Here - take it.", "It's yours.", "Fine. Have it." })

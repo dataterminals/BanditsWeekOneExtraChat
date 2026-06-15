@@ -501,6 +501,18 @@ local wearTriggers = {
 }
 for _, q in ipairs(wearTriggers) do add{ query=q, action="WEAR", res="Okay." } end
 
+-- STRIP: follower removes a named garment (or everything) and drops it - the
+-- other half of "take your <slot> off". Gated to followers, so a stranger's
+-- "undress" still hits Week One's own (hostile) reaction.
+local function isFollower(ctx) return ctx.role == "Babe" end
+local stripTriggers = {
+    {"take","off","your"}, {"remove","your"}, {"take","that","off"},
+    {"take","off","that"}, {"take","it","off"}, {"lose","the"}, {"ditch","the"},
+    {"strip"}, {"undress"}, {"get","naked"}, {"take","everything","off"},
+    {"take","off","everything"},
+}
+for _, q in ipairs(stripTriggers) do add{ query=q, cond=isFollower, action="STRIP", res="Okay." } end
+
 -- ---- RESPONSES: the three patterns, demonstrated ---------------------------
 
 -- (1) RANDOM variety: a list -> a different line each time you ask.
@@ -1114,6 +1126,63 @@ local function findGroundClothing(bandit, radius)
     return found
 end
 
+-- Best-effort: read a clothing item's dye tint -> packed dec (nil if undyed),
+-- so a swapped-in garment keeps its colour. pcall-guarded: if the visual API
+-- isn't shaped as expected it just returns nil and the item renders default.
+local function captureTint(item)
+    local ok, dec = pcall(function()
+        local vis = item:getVisual()
+        if not vis then return nil end
+        local tint = vis:getTint()
+        if not tint then return nil end
+        local r, g, b = tint:getRedFloat(), tint:getGreenFloat(), tint:getBlueFloat()
+        if r > 0.97 and g > 0.97 and b > 0.97 then return nil end   -- white == undyed
+        return BanditUtils.rgb2dec(r, g, b)
+    end)
+    if ok then return dec end
+    return nil
+end
+
+-- STRIP support: which worn garment did the player name, are they asking for a
+-- full strip, and a readout of what she's wearing. Garment word -> a term that
+-- appears in the body-location key or item type.
+local garmentAliases = {
+    coat="jacket", parka="jacket", overcoat="jacket", blazer="jacket",
+    trousers="pants", jeans="pants", slacks="pants",
+    boots="shoes", sneakers="shoes", footwear="shoes",
+    cap="hat", helmet="hat", beanie="hat",
+    hoodie="sweater", pullover="sweater", jumper="sweater",
+    glove="hands", gloves="hands", mittens="hands",
+    shades="eyes", glasses="eyes", sunglasses="eyes", goggles="eyes", scarf="neck",
+}
+local function findWornGarment(brain, said)
+    if not brain.clothing then return nil end
+    local terms = {}
+    for w in said:gmatch("%a+") do terms[#terms + 1] = garmentAliases[w] or w end
+    for loc, itemType in pairs(brain.clothing) do
+        local hay = (tostring(loc) .. " " .. (itemType:match("%.([^%.]+)$") or itemType)):lower():gsub("_", " ")
+        for _, term in ipairs(terms) do
+            if #term >= 3 and hay:find(term, 1, true) then return loc, itemType end
+        end
+    end
+    return nil
+end
+local function wantsFullStrip(said)
+    return said:find("everything") or said:find("naked") or said:find("undress")
+        or said:find("strip") or said:find("all off") or said:find("it all")
+        or said:find("your clothes")
+end
+local function wearingList(brain)
+    if not brain.clothing then return "barely anything." end
+    local parts = {}
+    for _, itemType in pairs(brain.clothing) do
+        parts[#parts + 1] = (prettyItem(itemType) or "something")
+        if #parts >= 6 then break end
+    end
+    if #parts == 0 then return "honestly, not much." end
+    return "my " .. table.concat(parts, ", ") .. "."
+end
+
 -- Make a bandit leave the player's home ON FOOT and stop squatting: open AND
 -- unlock the nearest exterior door (the player's Homestead claim keys doors shut,
 -- which otherwise traps a plain Walker pacing at the door), then queue a LOCKED
@@ -1471,7 +1540,7 @@ local function doAction(entry, ctx)
                 end
             end
             brain.clothing[c.loc] = c.item:getFullType()
-            brain.tint[c.loc]     = nil            -- render in the item's own colour
+            brain.tint[c.loc]     = captureTint(c.item)   -- keep its dye, if any
             removeWorldItem(c.sq, c.obj, c.item)
             changed = changed + 1
         end
@@ -1483,6 +1552,46 @@ local function doAction(entry, ctx)
         Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
         return true, ctx.pick({ "There - how do I look?", "Better. Thanks for this.",
             "Good fit, I'll keep it on.", "Mm, much better. Thank you." })
+
+    elseif act == "STRIP" then
+        -- Take a named garment off (or everything) and drop it - no replacement.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        brain.clothing = brain.clothing or {}
+        brain.tint     = brain.tint or {}
+        local s  = ctx.said or ""
+        local sq = bandit:getCurrentSquare()
+        local function shed(loc, itemType)
+            if itemType and sq then
+                local it = BanditCompatibility.InstanceItem(itemType)
+                if it then sq:AddWorldInventoryItem(it, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0) end
+            end
+            brain.clothing[loc] = nil
+            brain.tint[loc]     = nil
+        end
+
+        if wantsFullStrip(s) then
+            local locs = {}
+            for loc in pairs(brain.clothing) do locs[#locs + 1] = loc end
+            if #locs == 0 then return true, "I'm already down to nothing." end
+            for _, loc in ipairs(locs) do shed(loc, brain.clothing[loc]) end
+            Bandit.ApplyVisuals(bandit, brain)
+            Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
+            return true, ctx.pick({ "...All of it? For you - fine.", "Okay. Don't make it weird.", "There. Happy now?" })
+        end
+
+        local loc, itemType = findWornGarment(brain, s)
+        if not loc then
+            return true, "Take off what, exactly? I've got " .. wearingList(brain)
+        end
+        shed(loc, itemType)
+        Bandit.ClearTasks(bandit)
+        Bandit.AddTask(bandit, { action="TimeEvent", anim="Loot",
+            x=bandit:getX(), y=bandit:getY(), z=bandit:getZ(), time=250 })
+        Bandit.ApplyVisuals(bandit, brain)
+        Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
+        local nm = prettyItem(itemType) or "it"
+        return true, ctx.pick({ nm .. " off. Here you go.", "Alright, " .. nm .. " coming off.",
+            "Fine - my " .. nm .. ", all yours." })
     end
 
     return false, nil

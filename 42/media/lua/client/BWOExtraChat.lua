@@ -469,6 +469,16 @@ local swapTriggers = {
 }
 for _, q in ipairs(swapTriggers) do add{ query=q, action="SWAP", res="Okay." } end
 
+-- WINDOWGUARD: post a follower at the nearest window to keep watch outside (Babe).
+local windowGuardTriggers = {
+    {"guard","the","window"}, {"watch","the","window"}, {"guard","by","the","window"},
+    {"post","by","the","window"}, {"post","up","by","the","window"}, {"guard","the","windows"},
+    {"watch","the","windows"}, {"watch","outside"}, {"keep","watch","outside"},
+    {"keep","an","eye","outside"}, {"by","the","window"}, {"cover","the","window"},
+    {"guard","window"}, {"watch","window"}, {"take","the","window"},
+}
+for _, q in ipairs(windowGuardTriggers) do add{ query=q, action="WINDOWGUARD", res="Okay." } end
+
 -- DISARM: take the follower's weapon (she drops it for you)
 local disarmTriggers = {
     {"give","me","your","gun"}, {"give","me","your","weapon"}, {"give","me","your","rifle"},
@@ -933,10 +943,36 @@ local function babeCarEntry(bandit)
 end
 
 -- The replacement Babe.Main: try our car-entry (guarded); otherwise the original.
+-- Also drops any window-guard post - being back in Main means she's following.
+local origBabeGuard
 local function babeMainEnhanced(bandit)
+    local brain = BanditBrain.Get(bandit)
+    if brain and brain.bwoGuard then brain.bwoGuard = nil end
     local ok, res = pcall(babeCarEntry, bandit)
     if ok and res then return res end
     return origBabeMain(bandit)
+end
+
+-- The replacement Babe.Guard: if she's been posted at a window (brain.bwoGuard),
+-- walk her there and face it; otherwise idle in place exactly like vanilla. Fully
+-- pcall-guarded so a bad tick can never break her AI - it just falls back.
+local function babeGuardEnhanced(bandit)
+    local ok, res = pcall(function()
+        local brain = BanditBrain.Get(bandit)
+        if brain and brain.bwoGuard then
+            local g = brain.bwoGuard
+            local dist = BanditUtils.DistTo(bandit:getX(), bandit:getY(), g.x, g.y)
+            if dist > 1.0 then
+                return { status=true, next="Guard",
+                         tasks={ BanditUtils.GetMoveTask(0, g.x, g.y, g.z, "Walk", dist, false) } }
+            elseif g.fx then
+                bandit:faceLocationF(g.fx, g.fy)   -- arrived: turn to the window
+            end
+        end
+        return nil
+    end)
+    if ok and res then return res end
+    return origBabeGuard(bandit)
 end
 
 -- Pre-compute the PLAYER's status and equipment into a tidy bundle, so flavour
@@ -1191,6 +1227,35 @@ local function findGroundClothing(bandit, radius)
     return found
 end
 
+-- Find the nearest window to the player and an INSIDE tile to post a guard on.
+-- Returns standSquare and the window's square (to face), or nil.
+local function findGuardWindow(player, radius)
+    local cell = getCell()
+    local px, py, pz = math.floor(player:getX()), math.floor(player:getY()), math.floor(player:getZ())
+    local best, bestDist, bestWinSq
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local wsq = cell:getGridSquare(px + dx, py + dy, pz)
+            local win = wsq and wsq:getWindow()
+            if win then
+                -- the room square on the other side of the window edge (N or W)
+                local other = win:getNorth()
+                    and cell:getGridSquare(wsq:getX(), wsq:getY() - 1, wsq:getZ())
+                    or  cell:getGridSquare(wsq:getX() - 1, wsq:getY(), wsq:getZ())
+                for _, cand in ipairs({ wsq, other }) do
+                    if cand and not cand:isOutside() then   -- stand inside, look out
+                        local d = BanditUtils.DistTo(cand:getX(), cand:getY(), player:getX(), player:getY())
+                        if not bestDist or d < bestDist then
+                            best, bestDist, bestWinSq = cand, d, wsq
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best, bestWinSq
+end
+
 -- Best-effort: read a clothing item's dye tint -> packed dec (nil if undyed),
 -- so a swapped-in garment keeps its colour. pcall-guarded: if the visual API
 -- isn't shaped as expected it just returns nil and the item renders default.
@@ -1379,6 +1444,24 @@ local function doAction(entry, ctx)
         Bandit.ClearTasks(bandit)
         Bandit.AddTask(bandit, { action="GoTo", time=50, x=wx, y=wy, z=z, walkType="Walk", closeSlow=true })
         return true, nil
+
+    elseif act == "WINDOWGUARD" then
+        -- Post her at the nearest window to watch outside. We stash a guard target
+        -- on the brain and flip her to the Guard stage; our Babe.Guard override
+        -- walks her there and holds her facing the window.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local stand, winSq = findGuardWindow(ctx.player, 10)
+        if not stand then
+            return true, ctx.pick({ "I don't see a window to watch from here.",
+                "No window close by - take me somewhere with a view." })
+        end
+        brain.bwoGuard = { x = stand:getX() + 0.5, y = stand:getY() + 0.5, z = stand:getZ(),
+                           fx = winSq:getX() + 0.5, fy = winSq:getY() + 0.5 }
+        Bandit.ClearTasks(bandit)
+        Bandit.SetProgramStage(bandit, "Guard", {})
+        Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
+        return true, ctx.pick({ "On it - I'll watch the window.",
+            "Good idea. Eyes outside.", "Posting up by the window. Nothing gets past me." })
 
     elseif act == "GRAB" then
         local item, obj, sq = findGroundWeapon(bandit, 2)
@@ -1871,6 +1954,14 @@ local function install()
         origBabeMain = ZombiePrograms.Babe.Main
         ZombiePrograms.Babe.Main = babeMainEnhanced
         ZombiePrograms.Babe.__extraChatCarBarks = true
+    end
+
+    -- override Babe.Guard so a follower can be posted at a window (walk-then-hold)
+    if ZombiePrograms and ZombiePrograms.Babe and type(ZombiePrograms.Babe.Guard) == "function"
+       and not ZombiePrograms.Babe.__extraChatGuard then
+        origBabeGuard = ZombiePrograms.Babe.Guard
+        ZombiePrograms.Babe.Guard = babeGuardEnhanced
+        ZombiePrograms.Babe.__extraChatGuard = true
     end
     print("[BWOExtraChat] installed - " .. #data .. " custom phrases active (+ proximity barks, car barks).")
 end

@@ -513,6 +513,52 @@ local stripTriggers = {
 }
 for _, q in ipairs(stripTriggers) do add{ query=q, cond=isFollower, action="STRIP", res="Okay." } end
 
+-- WEAR / STRIP flavour (normal, everyday tone - edit freely). In stripOneLines,
+-- %ITEM is replaced with the garment's name (works for any clothing, not just
+-- shirts); the other two pools need no substitution.
+local wearLines = {
+    "There - how do I look?",
+    "Better. Thanks for this.",
+    "Good fit. I'll keep it on.",
+    "Mm, much better. Thank you.",
+    "Ah, that's more like it - bit warmer now.",
+    "How's it look? Be honest.",
+    "Fits well enough. Beats what I had on.",
+    "New threads. I'll take it.",
+    "Yeah, this'll do nicely.",
+    "Comfier than my last outfit, that's for sure.",
+    "Give me a sec to change... okay. Decent. Thanks.",
+    "Not bad at all. Where'd you find it?",
+    "Suppose I was due for a change anyway.",
+}
+local stripOneLines = {
+    "%ITEM off. Here you go.",
+    "Alright, %ITEM coming off.",
+    "Fine - my %ITEM, all yours.",
+    "There. One %ITEM, off.",
+    "Happy? The %ITEM's off.",
+    "Taking the %ITEM off, then... there.",
+    "If you say so. %ITEM, gone.",
+    "Bit colder without the %ITEM, but okay.",
+    "Sure. The %ITEM - catch.",
+    "Done. You can have the %ITEM.",
+    "Hand me something else after, yeah? %ITEM's off.",
+}
+local stripAllLines = {
+    "...All of it? Alright, alright.",
+    "Everything? You're serious. Fine.",
+    "Okay. Let's not make this weird.",
+    "There. That's everything.",
+    "Hope you've got a good reason for this.",
+    "Freezing now, just so you know.",
+    "Down to nothing. Satisfied?",
+    "If this is part of some plan, it'd better be a good one.",
+    "All off. This is ridiculous, but... fine.",
+    "Happy now? Not a stitch left.",
+    "Brrr. Remind me why I trust you again?",
+    "There - everything. Get me something to wear soon, okay?",
+}
+
 -- ---- RESPONSES: the three patterns, demonstrated ---------------------------
 
 -- (1) RANDOM variety: a list -> a different line each time you ask.
@@ -980,10 +1026,18 @@ end
 -- minority of lines are touched, never both ends at once, and prefixes flow into
 -- the sentence (comma + lowercased continuation) so it reads as natural speech
 -- rather than a canned phrase bolted on. Tune SASS_CHANCE_* to taste.
-local SASS_PREFIX = { "Honestly, ", "Okay, ", "I mean, ", "Ugh, ", "Like, ", "Oh my god, " }
-local SASS_SUFFIX = { " Like, seriously.", " I swear.", " ...honestly.", " Literally." }
-local SASS_CHANCE_PREFIX = 28   -- % of female lines that get a leading inflection
-local SASS_CHANCE_SUFFIX = 12   -- % that get a trailing tic instead (mutually exclusive)
+local SASS_PREFIX = {
+    "Honestly, ", "Okay, ", "I mean, ", "Ugh, ", "Like, ", "Oh my god, ",
+    "Look, ", "Listen, ", "God, ", "Seriously, ", "I swear, ", "Not gonna lie, ",
+    "Honestly though, ", "Okay so, ", "Jeez, ", "Right, ", "Well, ", "No but like, ",
+}
+local SASS_SUFFIX = {
+    " Like, seriously.", " I swear.", " ...honestly.", " Literally.", " For real.",
+    " I can't.", " Not even kidding.", " Or whatever.", " God.", " I mean it.",
+    " No joke.", " ...obviously.", " Ugh.", " Swear to god.", " ...for real though.",
+}
+local SASS_CHANCE_PREFIX = 22   -- % of female lines that get a leading inflection
+local SASS_CHANCE_SUFFIX = 9    -- % that get a trailing tic instead (mutually exclusive)
 
 -- Lowercase the first letter so a comma-prefix flows, but leave a lone "I" alone.
 local function lcfirst(s)
@@ -1181,6 +1235,13 @@ local function wearingList(brain)
     end
     if #parts == 0 then return "honestly, not much." end
     return "my " .. table.concat(parts, ", ") .. "."
+end
+
+-- Pick a clothing flavour line, substituting %ITEM with the garment name if given.
+local function pickClothing(pool, nm)
+    local line = BanditUtils.Choice(pool)
+    if nm then line = line:gsub("%%ITEM", nm) end
+    return line
 end
 
 -- Make a bandit leave the player's home ON FOOT and stop squatting: open AND
@@ -1550,8 +1611,7 @@ local function doAction(entry, ctx)
             x=bandit:getX(), y=bandit:getY(), z=bandit:getZ(), time=300 })
         Bandit.ApplyVisuals(bandit, brain)
         Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
-        return true, ctx.pick({ "There - how do I look?", "Better. Thanks for this.",
-            "Good fit, I'll keep it on.", "Mm, much better. Thank you." })
+        return true, pickClothing(wearLines)
 
     elseif act == "STRIP" then
         -- Take a named garment off (or everything) and drop it - no replacement.
@@ -1576,7 +1636,7 @@ local function doAction(entry, ctx)
             for _, loc in ipairs(locs) do shed(loc, brain.clothing[loc]) end
             Bandit.ApplyVisuals(bandit, brain)
             Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
-            return true, ctx.pick({ "...All of it? For you - fine.", "Okay. Don't make it weird.", "There. Happy now?" })
+            return true, pickClothing(stripAllLines)
         end
 
         local loc, itemType = findWornGarment(brain, s)
@@ -1590,8 +1650,7 @@ local function doAction(entry, ctx)
         Bandit.ApplyVisuals(bandit, brain)
         Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
         local nm = prettyItem(itemType) or "it"
-        return true, ctx.pick({ nm .. " off. Here you go.", "Alright, " .. nm .. " coming off.",
-            "Fine - my " .. nm .. ", all yours." })
+        return true, pickClothing(stripOneLines, nm)
     end
 
     return false, nil

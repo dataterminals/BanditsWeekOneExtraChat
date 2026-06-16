@@ -458,6 +458,17 @@ local armTriggers = {
 }
 for _, q in ipairs(armTriggers) do add{ query=q, action="ARM", res="Okay." } end
 
+-- SWAP: trade weapons - you give the one in YOUR hand and get back the one she's
+-- wielding. (ARM alone overwrites her slot, silently discarding her old weapon.)
+local swapTriggers = {
+    {"swap","weapons"}, {"swap","weapon"}, {"trade","weapons"}, {"trade","weapon"},
+    {"switch","weapons"}, {"swap","guns"}, {"trade","guns"}, {"switch","guns"},
+    {"swap","with","me"}, {"trade","with","me"}, {"switch","with","me"},
+    {"let","s","swap"}, {"lets","swap"}, {"let","s","trade"}, {"lets","trade"},
+    {"swap","your","weapon"}, {"swap","this","for","yours"},
+}
+for _, q in ipairs(swapTriggers) do add{ query=q, action="SWAP", res="Okay." } end
+
 -- DISARM: take the follower's weapon (she drops it for you)
 local disarmTriggers = {
     {"give","me","your","gun"}, {"give","me","your","weapon"}, {"give","me","your","rifle"},
@@ -1481,6 +1492,55 @@ local function doAction(entry, ctx)
         end)
         local nm = prettyItem(itemType) or "it"
         return true, ctx.pick({ "Thanks - " .. nm .. " it is.", nm .. ", I'll put it to use.", "Good. " .. nm .. " ready." })
+
+    elseif act == "SWAP" then
+        -- Trade: she takes the weapon in your hand; you get back the one she was
+        -- wielding. Unlike ARM, her old weapon isn't discarded.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local item = ctx.player:getPrimaryHandItem() or ctx.player:getSecondaryHandItem()
+        if not item then return true, "Swap what? Your hands are empty." end
+        if not item:IsWeapon() then return true, "That's not a weapon I can trade for." end
+
+        -- what she's currently wielding is what you'll get back
+        local oldType = bandit:getVariableString("BanditPrimary")
+        if oldType == "" or oldType == "Base.BareHands" then oldType = nil end
+
+        -- arm her with your weapon (sets its slot + draws it, replacing her held model)
+        local newType = armBanditWith(bandit, brain, item)
+        if not newType then return true, "I can't make that one work." end
+
+        -- remove your weapon from your hands
+        pcall(function()
+            if ctx.player:getPrimaryHandItem() == item then ctx.player:setPrimaryHandItem(nil) end
+            if ctx.player:getSecondaryHandItem() == item then ctx.player:setSecondaryHandItem(nil) end
+            local src = item:getContainer() or ctx.player:getInventory()
+            src:DoRemoveItem(item)
+        end)
+
+        -- clear her OLD weapon's loadout slot, if it wasn't the one we just overwrote
+        if oldType and oldType ~= newType then
+            local w = Bandit.GetWeapons(bandit)
+            if w.primary and w.primary.name == oldType then w.primary.name = nil; w.primary.bulletsLeft = 0
+            elseif w.secondary and w.secondary.name == oldType then w.secondary.name = nil; w.secondary.bulletsLeft = 0
+            elseif w.melee == oldType then w.melee = "Base.BareHands" end
+            Bandit.SetWeapons(bandit, w)
+            Bandit.ForceSyncPart(bandit, { id = brain.id, weapons = w })
+        end
+
+        -- hand her old weapon to you
+        if oldType then
+            pcall(function()
+                local old = BanditCompatibility.InstanceItem(oldType)
+                if old then
+                    ctx.player:getInventory():AddItem(old)
+                    if not ctx.player:getPrimaryHandItem() then ctx.player:setPrimaryHandItem(old) end
+                end
+            end)
+            local nm = prettyItem(oldType) or "mine"
+            return true, ctx.pick({ "Trade. Here's my " .. nm .. " - look after it.",
+                "Deal - my " .. nm .. " for yours.", "Fair swap. Take my " .. nm .. "." })
+        end
+        return true, ctx.pick({ "Done - though I'd nothing to trade back.", "Swapped. I had bare hands anyway." })
 
     elseif act == "DISARM" then
         -- Hand the NPC's weapon over to the player (dropped at her feet).

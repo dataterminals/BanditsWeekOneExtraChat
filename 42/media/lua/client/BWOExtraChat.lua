@@ -1259,23 +1259,36 @@ end
 -- Best-effort: read a clothing item's dye tint -> packed dec (nil if undyed),
 -- so a swapped-in garment keeps its colour. pcall-guarded: if the visual API
 -- isn't shaped as expected it just returns nil and the item renders default.
-local function captureTint(item)
-    local ok, dec = pcall(function()
-        local vis = item:getVisual()
-        if not vis then return nil end
-        local tint = vis:getTint()
-        if not tint then return nil end
-        local r, g, b = tint:getRedFloat(), tint:getGreenFloat(), tint:getBlueFloat()
-        if r > 0.97 and g > 0.97 and b > 0.97 then return nil end   -- white == undyed
-        return BanditUtils.rgb2dec(r, g, b)
-    end)
-    if ok then return dec end
+-- Week One NPCs wear REAL items (getWornItems / setWornItem), not brain.clothing,
+-- so all the clothing helpers operate on her actual worn items.
+
+-- The item she's wearing in body-location `loc` (string), or nil.
+local function wornItemAt(bandit, loc)
+    local w = bandit:getWornItems()
+    if not w then return nil end
+    for i = 0, w:size() - 1 do
+        local wi = w:get(i)
+        if wi and wi:getLocation() == loc then return wi:getItem() end
+    end
     return nil
 end
 
--- STRIP support: which worn garment did the player name, are they asking for a
--- full strip, and a readout of what she's wearing. Garment word -> a term that
--- appears in the body-location key or item type.
+-- Take a worn item off her and drop a copy at her feet (a fresh InstanceItem,
+-- to avoid any chance of double-referencing the same object).
+local function shedWorn(bandit, sq, item)
+    if not item then return end
+    local fullType = item:getFullType()
+    pcall(function() bandit:removeWornItem(item, false) end)
+    pcall(function() bandit:getInventory():DoRemoveItem(item) end)
+    if sq and fullType then
+        pcall(function()
+            local copy = BanditCompatibility.InstanceItem(fullType)
+            if copy then sq:AddWorldInventoryItem(copy, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0) end
+        end)
+    end
+end
+
+-- STRIP support: garment word -> a term found in the worn item's location or type.
 local garmentAliases = {
     coat="jacket", parka="jacket", overcoat="jacket", blazer="jacket",
     trousers="pants", jeans="pants", slacks="pants",
@@ -1285,14 +1298,20 @@ local garmentAliases = {
     glove="hands", gloves="hands", mittens="hands",
     shades="eyes", glasses="eyes", sunglasses="eyes", goggles="eyes", scarf="neck",
 }
-local function findWornGarment(brain, said)
-    if not brain.clothing then return nil end
+local function findWornGarment(bandit, said)
+    local w = bandit:getWornItems()
+    if not w then return nil end
     local terms = {}
-    for w in said:gmatch("%a+") do terms[#terms + 1] = garmentAliases[w] or w end
-    for loc, itemType in pairs(brain.clothing) do
-        local hay = (tostring(loc) .. " " .. (itemType:match("%.([^%.]+)$") or itemType)):lower():gsub("_", " ")
-        for _, term in ipairs(terms) do
-            if #term >= 3 and hay:find(term, 1, true) then return loc, itemType end
+    for word in said:gmatch("%a+") do terms[#terms + 1] = garmentAliases[word] or word end
+    for i = 0, w:size() - 1 do
+        local item = w:get(i):getItem()
+        if item then
+            local loc   = tostring(w:get(i):getLocation() or "")
+            local short = item:getFullType():match("%.([^%.]+)$") or item:getFullType()
+            local hay   = (loc .. " " .. short):lower():gsub("_", " ")
+            for _, term in ipairs(terms) do
+                if #term >= 3 and hay:find(term, 1, true) then return item end
+            end
         end
     end
     return nil
@@ -1302,11 +1321,13 @@ local function wantsFullStrip(said)
         or said:find("strip") or said:find("all off") or said:find("it all")
         or said:find("your clothes")
 end
-local function wearingList(brain)
-    if not brain.clothing then return "barely anything." end
+local function wearingList(bandit)
+    local w = bandit:getWornItems()
+    if not w or w:size() == 0 then return "honestly, not much." end
     local parts = {}
-    for _, itemType in pairs(brain.clothing) do
-        parts[#parts + 1] = (prettyItem(itemType) or "something")
+    for i = 0, w:size() - 1 do
+        local item = w:get(i):getItem()
+        if item then parts[#parts + 1] = (prettyItem(item:getFullType()) or "something") end
         if #parts >= 6 then break end
     end
     if #parts == 0 then return "honestly, not much." end
@@ -1720,8 +1741,10 @@ local function doAction(entry, ctx)
         return true, ctx.pick({ "There - all of it.", "Dropped. Take what you need.", "It's all yours." })
 
     elseif act == "WEAR" then
-        -- Swap a follower into clothing the player dropped beside her. Clothing
-        -- isn't hand-equippable (unlike ARM), so it must come off the ground.
+        -- Dress a follower from clothing dropped beside her. These NPCs wear REAL
+        -- items, so we move the dropped item onto her worn slot (it keeps its own
+        -- dye) and shed whatever she had in that slot. Clothing isn't hand-givable
+        -- (unlike ARM), so it has to come off the ground.
         if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
         local found = findGroundClothing(bandit, 2)
         if #found == 0 then
@@ -1730,69 +1753,50 @@ local function doAction(entry, ctx)
                 "I don't see anything to change into - set it at my feet.",
                 "Hand me an outfit first; drop it here and I'll swap." })
         end
-        brain.clothing = brain.clothing or {}
-        brain.tint     = brain.tint or {}
         local sq = bandit:getCurrentSquare()
         local changed = 0
         for _, c in ipairs(found) do
-            -- drop whatever she's wearing in that slot first, so it's a true swap
-            local old = brain.clothing[c.loc]
-            if old and sq then
-                local oldItem = BanditCompatibility.InstanceItem(old)
-                if oldItem then
-                    sq:AddWorldInventoryItem(oldItem, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0)
-                end
-            end
-            brain.clothing[c.loc] = c.item:getFullType()
-            brain.tint[c.loc]     = captureTint(c.item)   -- keep its dye, if any
-            removeWorldItem(c.sq, c.obj, c.item)
-            changed = changed + 1
+            local loc = c.loc
+            local old = wornItemAt(bandit, loc)
+            if old and old ~= c.item then shedWorn(bandit, sq, old) end   -- true swap
+            removeWorldItem(c.sq, c.obj, c.item)                          -- off the ground
+            local ok = pcall(function()
+                bandit:getInventory():AddItem(c.item)
+                bandit:setWornItem(loc, c.item)
+            end)
+            if ok then changed = changed + 1 end
         end
         if changed == 0 then return true, "That's not something I can wear." end
-        Bandit.ClearTasks(bandit)
-        Bandit.AddTask(bandit, { action="TimeEvent", anim="Loot",
-            x=bandit:getX(), y=bandit:getY(), z=bandit:getZ(), time=300 })
-        Bandit.ApplyVisuals(bandit, brain)
-        Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
+        bandit:resetModelNextFrame()
+        bandit:resetModel()
         return true, pickClothing(wearLines)
 
     elseif act == "STRIP" then
         -- Take a named garment off (or everything) and drop it - no replacement.
+        -- Reads her REAL worn items (brain.clothing is empty on these NPCs).
         if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
-        brain.clothing = brain.clothing or {}
-        brain.tint     = brain.tint or {}
         local s  = ctx.said or ""
         local sq = bandit:getCurrentSquare()
-        local function shed(loc, itemType)
-            if itemType and sq then
-                local it = BanditCompatibility.InstanceItem(itemType)
-                if it then sq:AddWorldInventoryItem(it, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0) end
-            end
-            brain.clothing[loc] = nil
-            brain.tint[loc]     = nil
-        end
 
         if wantsFullStrip(s) then
-            local locs = {}
-            for loc in pairs(brain.clothing) do locs[#locs + 1] = loc end
-            if #locs == 0 then return true, "I'm already down to nothing." end
-            for _, loc in ipairs(locs) do shed(loc, brain.clothing[loc]) end
-            Bandit.ApplyVisuals(bandit, brain)
-            Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
+            local w = bandit:getWornItems()
+            local items = {}
+            if w then for i = 0, w:size() - 1 do items[#items + 1] = w:get(i):getItem() end end
+            if #items == 0 then return true, "I'm already down to nothing." end
+            for _, it in ipairs(items) do shedWorn(bandit, sq, it) end
+            bandit:resetModelNextFrame()
+            bandit:resetModel()
             return true, pickClothing(stripAllLines)
         end
 
-        local loc, itemType = findWornGarment(brain, s)
-        if not loc then
-            return true, "Take off what, exactly? I've got " .. wearingList(brain)
+        local item = findWornGarment(bandit, s)
+        if not item then
+            return true, "Take off what, exactly? I've got " .. wearingList(bandit)
         end
-        shed(loc, itemType)
-        Bandit.ClearTasks(bandit)
-        Bandit.AddTask(bandit, { action="TimeEvent", anim="Loot",
-            x=bandit:getX(), y=bandit:getY(), z=bandit:getZ(), time=250 })
-        Bandit.ApplyVisuals(bandit, brain)
-        Bandit.ForceSyncPart(bandit, { id = brain.id, clothing = brain.clothing, tint = brain.tint })
-        local nm = prettyItem(itemType) or "it"
+        local nm = prettyItem(item:getFullType()) or "it"
+        shedWorn(bandit, sq, item)
+        bandit:resetModelNextFrame()
+        bandit:resetModel()
         return true, pickClothing(stripOneLines, nm)
     end
 

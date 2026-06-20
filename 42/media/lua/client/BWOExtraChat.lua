@@ -1259,36 +1259,78 @@ end
 -- Best-effort: read a clothing item's dye tint -> packed dec (nil if undyed),
 -- so a swapped-in garment keeps its colour. pcall-guarded: if the visual API
 -- isn't shaped as expected it just returns nil and the item renders default.
--- Week One NPCs wear REAL items (getWornItems / setWornItem), not brain.clothing,
--- so all the clothing helpers operate on her actual worn items.
+-- Week One NPCs keep their clothing in the model's ITEM-VISUALS layer
+-- (getItemVisuals) - NOT getWornItems() and NOT brain.clothing - the same place
+-- Bandit.ApplyVisuals builds. Each visual's getInventoryItem() is the real
+-- Clothing item (body location, type, dye). We read and rebuild that layer.
 
--- The item she's wearing in body-location `loc` (string), or nil.
-local function wornItemAt(bandit, loc)
-    local w = bandit:getWornItems()
-    if not w then return nil end
-    for i = 0, w:size() - 1 do
-        local wi = w:get(i)
-        if wi and wi:getLocation() == loc then return wi:getItem() end
+-- Snapshot her visible clothing: list of { iv, item, itemType, loc }, + the
+-- live ItemVisuals collection.
+local function readVisualClothing(bandit)
+    local out = {}
+    local ivs = bandit:getItemVisuals()
+    if not ivs then return out, nil end
+    for i = 0, ivs:size() - 1 do
+        local iv = ivs:get(i)
+        local item = iv and iv:getInventoryItem()
+        local itemType = (item and item:getFullType()) or (iv and iv:getItemType())
+        if itemType and itemType ~= "" then
+            out[#out + 1] = { iv = iv, item = item, itemType = itemType,
+                              loc = item and item:getBodyLocation() }
+        end
     end
-    return nil
+    return out, ivs
 end
 
--- Take a worn item off her and drop a copy at her feet (a fresh InstanceItem,
--- to avoid any chance of double-referencing the same object).
-local function shedWorn(bandit, sq, item)
-    if not item then return end
+-- Build an ItemVisual for an item, attaching it + carrying its dye (so STRIP can
+-- find it later and the colour shows). Mirrors Bandit.ApplyVisuals.
+local function makeVisual(item)
     local fullType = item:getFullType()
-    pcall(function() bandit:removeWornItem(item, false) end)
-    pcall(function() bandit:getInventory():DoRemoveItem(item) end)
-    if sq and fullType then
-        pcall(function()
-            local copy = BanditCompatibility.InstanceItem(fullType)
-            if copy then sq:AddWorldInventoryItem(copy, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0) end
-        end)
-    end
+    local iv = ItemVisual.new()
+    iv:setItemType(fullType)
+    iv:setClothingItemName(fullType)
+    pcall(function() iv:setInventoryItem(item) end)
+    pcall(function()
+        if item:getVisual() and item:getClothingItem() then
+            local tint = item:getVisual():getTint(item:getClothingItem())
+            if tint then iv:setTint(tint) end
+        end
+    end)
+    return iv
 end
 
--- STRIP support: garment word -> a term found in the worn item's location or type.
+-- Remove visuals matching removePred (dropping a copy of each at her feet), add
+-- visuals for addItems, then re-render. Rebuild via clear()+add() (ApplyVisuals'
+-- idiom). Non-clothing visuals (e.g. a bag) are kept. Returns count removed.
+local function modifyVisuals(bandit, sq, removePred, addItems)
+    local ivs = bandit:getItemVisuals()
+    if not ivs then return 0 end
+    local keep, removed = {}, 0
+    for i = 0, ivs:size() - 1 do
+        local iv = ivs:get(i)
+        local item = iv and iv:getInventoryItem()
+        local itemType = (item and item:getFullType()) or (iv and iv:getItemType())
+        if removePred and itemType and itemType ~= "" and removePred(item, itemType) then
+            if sq then pcall(function()
+                local copy = BanditCompatibility.InstanceItem(itemType)
+                if copy then sq:AddWorldInventoryItem(copy, ZombRandFloat(0.1, 0.8), ZombRandFloat(0.1, 0.8), 0) end
+            end) end
+            removed = removed + 1
+        else
+            keep[#keep + 1] = iv
+        end
+    end
+    pcall(function()
+        ivs:clear()
+        for _, iv in ipairs(keep) do ivs:add(iv) end
+        for _, item in ipairs(addItems or {}) do ivs:add(makeVisual(item)) end
+    end)
+    bandit:resetModelNextFrame()
+    bandit:resetModel()
+    return removed
+end
+
+-- STRIP support: garment word -> a term found in the item's location or type.
 local garmentAliases = {
     coat="jacket", parka="jacket", overcoat="jacket", blazer="jacket",
     trousers="pants", jeans="pants", slacks="pants",
@@ -1298,20 +1340,15 @@ local garmentAliases = {
     glove="hands", gloves="hands", mittens="hands",
     shades="eyes", glasses="eyes", sunglasses="eyes", goggles="eyes", scarf="neck",
 }
+-- The visible garment the message names (a readVisualClothing entry), or nil.
 local function findWornGarment(bandit, said)
-    local w = bandit:getWornItems()
-    if not w then return nil end
     local terms = {}
     for word in said:gmatch("%a+") do terms[#terms + 1] = garmentAliases[word] or word end
-    for i = 0, w:size() - 1 do
-        local item = w:get(i):getItem()
-        if item then
-            local loc   = tostring(w:get(i):getLocation() or "")
-            local short = item:getFullType():match("%.([^%.]+)$") or item:getFullType()
-            local hay   = (loc .. " " .. short):lower():gsub("_", " ")
-            for _, term in ipairs(terms) do
-                if #term >= 3 and hay:find(term, 1, true) then return item end
-            end
+    for _, c in ipairs(readVisualClothing(bandit)) do
+        local short = c.itemType:match("%.([^%.]+)$") or c.itemType
+        local hay = (tostring(c.loc or "") .. " " .. short):lower():gsub("_", " ")
+        for _, term in ipairs(terms) do
+            if #term >= 3 and hay:find(term, 1, true) then return c end
         end
     end
     return nil
@@ -1322,15 +1359,13 @@ local function wantsFullStrip(said)
         or said:find("your clothes")
 end
 local function wearingList(bandit)
-    local w = bandit:getWornItems()
-    if not w or w:size() == 0 then return "honestly, not much." end
+    local clothes = readVisualClothing(bandit)
+    if #clothes == 0 then return "honestly, not much." end
     local parts = {}
-    for i = 0, w:size() - 1 do
-        local item = w:get(i):getItem()
-        if item then parts[#parts + 1] = (prettyItem(item:getFullType()) or "something") end
+    for _, c in ipairs(clothes) do
+        parts[#parts + 1] = (prettyItem(c.itemType) or "something")
         if #parts >= 6 then break end
     end
-    if #parts == 0 then return "honestly, not much." end
     return "my " .. table.concat(parts, ", ") .. "."
 end
 
@@ -1754,21 +1789,16 @@ local function doAction(entry, ctx)
                 "Hand me an outfit first; drop it here and I'll swap." })
         end
         local sq = bandit:getCurrentSquare()
-        local changed = 0
+        local newItems, removeLocs = {}, {}
         for _, c in ipairs(found) do
-            local loc = c.loc
-            local old = wornItemAt(bandit, loc)
-            if old and old ~= c.item then shedWorn(bandit, sq, old) end   -- true swap
-            removeWorldItem(c.sq, c.obj, c.item)                          -- off the ground
-            local ok = pcall(function()
-                bandit:getInventory():AddItem(c.item)
-                bandit:setWornItem(loc, c.item)
-            end)
-            if ok then changed = changed + 1 end
+            if c.loc then removeLocs[c.loc] = true end       -- shed what shares its slot
+            newItems[#newItems + 1] = c.item
+            removeWorldItem(c.sq, c.obj, c.item)             -- consume from the ground
         end
-        if changed == 0 then return true, "That's not something I can wear." end
-        bandit:resetModelNextFrame()
-        bandit:resetModel()
+        -- one rebuild: drop the displaced slot items, add the new pieces
+        modifyVisuals(bandit, sq,
+            function(item, t) return item and removeLocs[item:getBodyLocation()] end,
+            newItems)
         return true, pickClothing(wearLines)
 
     elseif act == "STRIP" then
@@ -1779,24 +1809,21 @@ local function doAction(entry, ctx)
         local sq = bandit:getCurrentSquare()
 
         if wantsFullStrip(s) then
-            local w = bandit:getWornItems()
-            local items = {}
-            if w then for i = 0, w:size() - 1 do items[#items + 1] = w:get(i):getItem() end end
-            if #items == 0 then return true, "I'm already down to nothing." end
-            for _, it in ipairs(items) do shedWorn(bandit, sq, it) end
-            bandit:resetModelNextFrame()
-            bandit:resetModel()
+            local removed = modifyVisuals(bandit, sq,
+                function(item, t) return instanceof(item, "Clothing") end, nil)
+            if removed == 0 then return true, "I'm already down to nothing." end
             return true, pickClothing(stripAllLines)
         end
 
-        local item = findWornGarment(bandit, s)
-        if not item then
+        local c = findWornGarment(bandit, s)
+        if not c then
             return true, "Take off what, exactly? I've got " .. wearingList(bandit)
         end
-        local nm = prettyItem(item:getFullType()) or "it"
-        shedWorn(bandit, sq, item)
-        bandit:resetModelNextFrame()
-        bandit:resetModel()
+        local nm = prettyItem(c.itemType) or "it"
+        local targetLoc, targetType = c.loc, c.itemType
+        modifyVisuals(bandit, sq, function(item, t)
+            return (item and targetLoc and item:getBodyLocation() == targetLoc) or t == targetType
+        end, nil)
         return true, pickClothing(stripOneLines, nm)
     end
 

@@ -479,6 +479,31 @@ local windowGuardTriggers = {
 }
 for _, q in ipairs(windowGuardTriggers) do add{ query=q, action="WINDOWGUARD", res="Okay." } end
 
+-- cond: this NPC is a recruited follower (so a stranger falls through to vanilla).
+local function isFollower(ctx) return ctx.role == "Babe" end
+
+-- RELAX / FALLIN: send a follower to mill about (no looting/items/doors), and recall.
+local relaxTriggers = {
+    {"hang","tight"}, {"chill","out"}, {"relax"}, {"chill"}, {"take","a","break"},
+    {"take","five"}, {"do","your","own","thing"}, {"loosen","up"}, {"kick","back"},
+    {"unwind"}, {"rest","up"}, {"hang","back"},
+}
+for _, q in ipairs(relaxTriggers) do add{ query=q, cond=isFollower, action="RELAX", res="Okay." } end
+
+local fallinTriggers = {
+    {"fall","in"}, {"form","up"}, {"on","me"}, {"unrelax"}, {"back","to","me"},
+    {"heel"}, {"regroup"}, {"line","up"},
+}
+for _, q in ipairs(fallinTriggers) do add{ query=q, cond=isFollower, action="FALLIN", res="Okay." } end
+
+-- FRONTGUARD: patrol the windows near where you're standing, calling out threats.
+local frontGuardTriggers = {
+    {"guard","the","front"}, {"watch","the","front"}, {"cover","the","front"},
+    {"hold","the","front"}, {"patrol","the","windows"}, {"watch","the","perimeter"},
+    {"cover","the","perimeter"}, {"guard","the","perimeter"}, {"keep","watch","up","front"},
+}
+for _, q in ipairs(frontGuardTriggers) do add{ query=q, action="FRONTGUARD", res="Okay." } end
+
 -- DISARM: take the follower's weapon (she drops it for you)
 local disarmTriggers = {
     {"give","me","your","gun"}, {"give","me","your","weapon"}, {"give","me","your","rifle"},
@@ -525,7 +550,6 @@ for _, q in ipairs(wearTriggers) do add{ query=q, action="WEAR", res="Okay." } e
 -- STRIP: follower removes a named garment (or everything) and drops it - the
 -- other half of "take your <slot> off". Gated to followers, so a stranger's
 -- "undress" still hits Week One's own (hostile) reaction.
-local function isFollower(ctx) return ctx.role == "Babe" end
 local stripTriggers = {
     {"take","off","your"}, {"remove","your"}, {"take","that","off"},
     {"take","off","that"}, {"take","it","off"}, {"lose","the"}, {"ditch","the"},
@@ -947,7 +971,7 @@ end
 local origBabeGuard
 local function babeMainEnhanced(bandit)
     local brain = BanditBrain.Get(bandit)
-    if brain and brain.bwoGuard then brain.bwoGuard = nil end
+    if brain then brain.bwoGuard = nil; brain.bwoRelax = nil; brain.bwoFront = nil end
     local ok, res = pcall(babeCarEntry, bandit)
     if ok and res then return res end
     return origBabeMain(bandit)
@@ -973,6 +997,88 @@ local function babeGuardEnhanced(bandit)
     end)
     if ok and res then return res end
     return origBabeGuard(bandit)
+end
+
+-- Babe.Relax: she hangs back near where she was released - sits if a seat's handy,
+-- otherwise fidgets in place. No looting, no item-moving, no doors. FALLIN recalls.
+local function babeRelax(bandit)
+    local ok, res = pcall(function()
+        local brain = BanditBrain.Get(bandit)
+        if brain and brain.bwoRelax then
+            local g = brain.bwoRelax
+            if BanditUtils.DistTo(bandit:getX(), bandit:getY(), g.x, g.y) > 6 then
+                return { status=true, next="Relax",
+                         tasks={ BanditUtils.GetMoveTask(0, g.x, g.y, g.z, "Walk", 6, false) } }
+            end
+        end
+        local tasks = {}
+        local sub = BanditPrograms.Bench(bandit)                          -- sit if able
+        if #sub == 0 then sub = BanditPrograms.FallbackAction(bandit) end -- else idle fidget
+        for _, t in pairs(sub) do table.insert(tasks, t) end
+        return { status=true, next="Relax", tasks=tasks }
+    end)
+    if ok and res then return res end
+    return { status=true, next="Relax", tasks={} }
+end
+
+-- Front-guard warning barks + threat scan near a window post.
+local frontWarnLines = {
+    "Movement out front - someone's coming.",
+    "Heads up, I've got eyes on someone outside.",
+    "We've got company at the front.",
+    "Someone out there, and they're armed.",
+    "Contact at the window - stay sharp.",
+    "I see someone. Doesn't look friendly.",
+}
+local FRONT_BARK_GAP = 15000   -- real ms between a post's warning barks
+local function frontScan(bandit, post, now)
+    if now < (post.barkNextOk or 0) then return end
+    local list = BanditZombie.GetAllB()
+    if not list then return end
+    for _, z in pairs(list) do
+        local b = z.brain
+        if b and z.x and (not b.program or b.program.name ~= "Babe") then   -- not a follower
+            if BanditUtils.DistTo(z.x, z.y, post.wx, post.wy) < 12 then
+                local threat = b.hostile
+                if not threat and b.weapons then     -- ...or carrying a gun
+                    threat = (b.weapons.primary and b.weapons.primary.name)
+                          or (b.weapons.secondary and b.weapons.secondary.name)
+                end
+                if threat then
+                    bandit:addLineChatElement(BanditUtils.Choice(frontWarnLines), 1, 0.5, 0)
+                    post.barkNextOk = now + FRONT_BARK_GAP
+                    return
+                end
+            end
+        end
+    end
+end
+
+-- Babe.Front: patrol the stored window posts, peeking out each and calling out a
+-- threat (already-hostile NPC, or one carrying a gun) within view of that window.
+local function babeFront(bandit)
+    local ok, res = pcall(function()
+        local brain = BanditBrain.Get(bandit)
+        local f = brain and brain.bwoFront
+        if not f or not f.posts or #f.posts == 0 then return nil end
+        f.idx = f.idx or 1
+        local post = f.posts[f.idx]
+        local now = getTimestampMs()
+        if BanditUtils.DistTo(bandit:getX(), bandit:getY(), post.sx, post.sy) > 1.2 then
+            return { status=true, next="Front",
+                     tasks={ BanditUtils.GetMoveTask(0, post.sx, post.sy, post.sz, "Walk", 4, false) } }
+        end
+        bandit:faceLocationF(post.wx, post.wy)    -- look out this window
+        frontScan(bandit, post, now)
+        f.dwellUntil = f.dwellUntil or (now + 4000)
+        if now >= f.dwellUntil then                -- linger, then move to the next window
+            f.idx = (f.idx % #f.posts) + 1
+            f.dwellUntil = nil
+        end
+        return { status=true, next="Front", tasks={} }
+    end)
+    if ok and res then return res end
+    return { status=true, next="Front", tasks={} }
 end
 
 -- Pre-compute the PLAYER's status and equipment into a tidy bundle, so flavour
@@ -1256,9 +1362,38 @@ local function findGuardWindow(player, radius)
     return best, bestWinSq
 end
 
--- Best-effort: read a clothing item's dye tint -> packed dec (nil if undyed),
--- so a swapped-in garment keeps its colour. pcall-guarded: if the visual API
--- isn't shaped as expected it just returns nil and the item renders default.
+-- Every window post within `radius` of the player: inside stand tile + the window
+-- to face. Used by "guard the front" to build a patrol route. Dedupes by tile.
+local function findFrontWindows(player, radius)
+    local cell = getCell()
+    local px, py, pz = math.floor(player:getX()), math.floor(player:getY()), math.floor(player:getZ())
+    local posts, seen = {}, {}
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local wsq = cell:getGridSquare(px + dx, py + dy, pz)
+            local win = wsq and wsq:getWindow()
+            if win then
+                local other = win:getNorth()
+                    and cell:getGridSquare(wsq:getX(), wsq:getY() - 1, wsq:getZ())
+                    or  cell:getGridSquare(wsq:getX() - 1, wsq:getY(), wsq:getZ())
+                local stand
+                for _, cand in ipairs({ wsq, other }) do
+                    if cand and not cand:isOutside() then stand = cand; break end
+                end
+                if stand then
+                    local key = stand:getX() .. ":" .. stand:getY()
+                    if not seen[key] then
+                        seen[key] = true
+                        posts[#posts + 1] = { sx = stand:getX() + 0.5, sy = stand:getY() + 0.5, sz = stand:getZ(),
+                                              wx = wsq:getX() + 0.5, wy = wsq:getY() + 0.5 }
+                    end
+                end
+            end
+        end
+    end
+    return posts
+end
+
 -- Week One NPCs keep their clothing in the model's ITEM-VISUALS layer
 -- (getItemVisuals) - NOT getWornItems() and NOT brain.clothing - the same place
 -- Bandit.ApplyVisuals builds. Each visual's getInventoryItem() is the real
@@ -1518,6 +1653,43 @@ local function doAction(entry, ctx)
         Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
         return true, ctx.pick({ "On it - I'll watch the window.",
             "Good idea. Eyes outside.", "Posting up by the window. Nothing gets past me." })
+
+    elseif act == "RELAX" then
+        -- Hang back near here and mill about until recalled (FALLIN).
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        brain.bwoRelax = { x = bandit:getX(), y = bandit:getY(), z = bandit:getZ() }
+        brain.bwoGuard, brain.bwoFront = nil, nil
+        Bandit.ClearTasks(bandit)
+        Bandit.SetProgramStage(bandit, "Relax", {})
+        Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
+        return true, ctx.pick({ "Sure - I'll hang back. Holler when you need me.",
+            "Taking five. Say the word and I'm with you.", "Alright, kicking back a while." })
+
+    elseif act == "FALLIN" then
+        -- Drop any relax/guard/front post and resume following.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        brain.bwoRelax, brain.bwoGuard, brain.bwoFront = nil, nil, nil
+        Bandit.ClearTasks(bandit)
+        Bandit.SetProgramStage(bandit, "Main", {})
+        Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
+        return true, ctx.pick({ "On you.", "Falling in.", "Right with you.", "Back at your side." })
+
+    elseif act == "FRONTGUARD" then
+        -- Patrol the windows near where you're standing, calling out threats.
+        if ctx.role ~= "Babe" then return true, "I'm not following you - recruit me first." end
+        local posts = findFrontWindows(ctx.player, 7)
+        if #posts == 0 then
+            return true, ctx.pick({ "No windows around here to cover.",
+                "I don't see any windows to watch from where you're standing." })
+        end
+        brain.bwoFront = { posts = posts, idx = 1 }
+        brain.bwoGuard, brain.bwoRelax = nil, nil
+        Bandit.ClearTasks(bandit)
+        Bandit.SetProgramStage(bandit, "Front", {})
+        Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
+        local n = #posts
+        return true, ctx.pick({ "On it - watching the front. " .. n .. " window" .. (n > 1 and "s" or "") .. " to cover.",
+            "Got the front. I'll call out anything I see.", "Eyes on the windows. Nothing gets past me." })
 
     elseif act == "GRAB" then
         local item, obj, sq = findGroundWeapon(bandit, 2)
@@ -1993,6 +2165,12 @@ local function install()
         origBabeGuard = ZombiePrograms.Babe.Guard
         ZombiePrograms.Babe.Guard = babeGuardEnhanced
         ZombiePrograms.Babe.__extraChatGuard = true
+    end
+
+    -- new follower stages: Relax (mill about) and Front (patrol the windows)
+    if ZombiePrograms and ZombiePrograms.Babe then
+        ZombiePrograms.Babe.Relax = babeRelax
+        ZombiePrograms.Babe.Front = babeFront
     end
     print("[BWOExtraChat] installed - " .. #data .. " custom phrases active (+ proximity barks, car barks).")
 end

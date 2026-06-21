@@ -496,6 +496,15 @@ local fallinTriggers = {
 }
 for _, q in ipairs(fallinTriggers) do add{ query=q, cond=isFollower, action="FALLIN", res="Okay." } end
 
+-- Barks for rejoining the player - used by the FALLIN command AND the auto-recall
+-- when you leave the house mid-guard. Edit freely.
+local fallInBarks = {
+    "On you.", "Falling in.", "Right with you.", "Back at your side.",
+    "Coming with you.", "On your six.", "Wherever you're headed.",
+    "Sticking close.", "Right behind you.", "Let's move - I'm with you.",
+    "Not leaving you out there alone.", "Wait up - falling in.",
+}
+
 -- FRONTGUARD: patrol the windows near where you're standing, calling out threats.
 local frontGuardTriggers = {
     {"guard","the","front"}, {"watch","the","front"}, {"cover","the","front"},
@@ -1021,31 +1030,54 @@ local function babeRelax(bandit)
     return { status=true, next="Relax", tasks={} }
 end
 
--- Front-guard warning barks + threat scan near a window post.
+-- Threat bearing relative to the player's facing -> a spoken direction.
+local function threatDir(master, tx, ty)
+    local ok, s = pcall(function()
+        local f = master:getForwardDirection()
+        local fx, fy = f:getX(), f:getY()
+        local vx, vy = tx - master:getX(), ty - master:getY()
+        local len = math.sqrt(vx * vx + vy * vy)
+        if len < 0.01 then return "right on top of us" end
+        vx, vy = vx / len, vy / len
+        local dot   = fx * vx + fy * vy        -- ahead / behind
+        local cross = fx * vy - fy * vx        -- left / right
+        if dot > 0.45 then return "directly across from us"
+        elseif dot < -0.45 then return "behind us"
+        elseif cross > 0 then return "to our left"
+        else return "to our right" end
+    end)
+    if ok and s then return s end
+    return "out front"
+end
+
+-- Front-guard warning barks. %WHO = a cop / someone, %DIR = bearing, %ARM = gun tag.
 local frontWarnLines = {
-    "Movement out front - someone's coming.",
-    "Heads up, I've got eyes on someone outside.",
-    "We've got company at the front.",
-    "Someone out there, and they're armed.",
-    "Contact at the window - stay sharp.",
-    "I see someone. Doesn't look friendly.",
+    "Contact %DIR - %WHO%ARM.",
+    "Heads up - %WHO %DIR%ARM.",
+    "Eyes up: %WHO %DIR%ARM.",
+    "We've got %WHO %DIR%ARM.",
+    "Movement %DIR - %WHO%ARM.",
+    "Someone %DIR%ARM - %WHO, by the look of it.",
 }
-local FRONT_BARK_GAP = 15000   -- real ms between a post's warning barks
-local function frontScan(bandit, post, now)
+local FRONT_BARK_GAP = 12000   -- real ms between a post's warning barks
+local function frontScan(bandit, post, now, master)
     if now < (post.barkNextOk or 0) then return end
     local list = BanditZombie.GetAllB()
     if not list then return end
     for _, z in pairs(list) do
         local b = z.brain
         if b and z.x and (not b.program or b.program.name ~= "Babe") then   -- not a follower
-            if BanditUtils.DistTo(z.x, z.y, post.wx, post.wy) < 12 then
-                local threat = b.hostile
-                if not threat and b.weapons then     -- ...or carrying a gun
-                    threat = (b.weapons.primary and b.weapons.primary.name)
-                          or (b.weapons.secondary and b.weapons.secondary.name)
-                end
-                if threat then
-                    bandit:addLineChatElement(BanditUtils.Choice(frontWarnLines), 1, 0.5, 0)
+            if BanditUtils.DistTo(z.x, z.y, post.wx, post.wy) < 14 then
+                local armed = b.weapons and ((b.weapons.primary and b.weapons.primary.name)
+                                          or (b.weapons.secondary and b.weapons.secondary.name))
+                if b.hostile or armed then
+                    local outfit = tostring(b.outfit or b.occupation or "")
+                    local isCop  = outfit:find("Police") or outfit:find("Detective") or outfit:find("SWAT")
+                    local line = BanditUtils.Choice(frontWarnLines)
+                    line = line:gsub("%%WHO", isCop and "a cop" or "someone")
+                    line = line:gsub("%%DIR", master and threatDir(master, z.x, z.y) or "out front")
+                    line = line:gsub("%%ARM", armed and " - and they've got a gun" or "")
+                    bandit:addLineChatElement(line, 1, 0.5, 0)
                     post.barkNextOk = now + FRONT_BARK_GAP
                     return
                 end
@@ -1061,6 +1093,25 @@ local function babeFront(bandit)
         local brain = BanditBrain.Get(bandit)
         local f = brain and brain.bwoFront
         if not f or not f.posts or #f.posts == 0 then return nil end
+        local master = BanditPlayer.GetMasterPlayer(bandit)
+
+        -- stay inside while the player is home; the moment they leave the house,
+        -- drop the post and fall back in (announced with a bark)
+        if master then
+            local left = false
+            if f.bldg then
+                local mx, my = master:getX(), master:getY()
+                if mx < f.bldg.x1 or mx > f.bldg.x2 or my < f.bldg.y1 or my > f.bldg.y2 then left = true end
+            elseif f.ax and BanditUtils.DistTo(master:getX(), master:getY(), f.ax, f.ay) > 15 then
+                left = true
+            end
+            if left then
+                brain.bwoFront = nil
+                bandit:addLineChatElement(BanditUtils.Choice(fallInBarks), 0, 1, 0)
+                return { status=true, next="Main", tasks={} }
+            end
+        end
+
         f.idx = f.idx or 1
         local post = f.posts[f.idx]
         local now = getTimestampMs()
@@ -1068,10 +1119,10 @@ local function babeFront(bandit)
             return { status=true, next="Front",
                      tasks={ BanditUtils.GetMoveTask(0, post.sx, post.sy, post.sz, "Walk", 4, false) } }
         end
-        bandit:faceLocationF(post.wx, post.wy)    -- look out this window
-        frontScan(bandit, post, now)
-        f.dwellUntil = f.dwellUntil or (now + 4000)
-        if now >= f.dwellUntil then                -- linger, then move to the next window
+        bandit:faceLocationF(post.wx, post.wy)    -- look out this window/door
+        frontScan(bandit, post, now, master)
+        f.dwellUntil = f.dwellUntil or (now + 4500)
+        if now >= f.dwellUntil then                -- linger, then rove to the next post
             f.idx = (f.idx % #f.posts) + 1
             f.dwellUntil = nil
         end
@@ -1362,34 +1413,66 @@ local function findGuardWindow(player, radius)
     return best, bestWinSq
 end
 
--- Every window post within `radius` of the player: inside stand tile + the window
--- to face. Used by "guard the front" to build a patrol route. Dedupes by tile.
+-- The interior floor tile to post on for a wall opening (window or door) on
+-- `wsq`, stepped ONE tile back from the opening so she never stands in it - that
+-- back-step is what stops her vaulting through windows. `north` = N-edge opening
+-- (separates wsq from y-1), else W-edge. Returns a square, or nil if undecidable.
+local function insideStand(cell, wsq, north)
+    local x, y, z = wsq:getX(), wsq:getY(), wsq:getZ()
+    local a = wsq
+    local b = north and cell:getGridSquare(x, y - 1, z) or cell:getGridSquare(x - 1, y, z)
+    local insideA = a and not a:isOutside()
+    local insideB = b and not b:isOutside()
+    local sx, sy
+    if insideA and not insideB then
+        sx, sy = (north and x or x + 1), (north and y + 1 or y)     -- step deeper from wsq
+    elseif insideB and not insideA then
+        sx, sy = (north and x or x - 2), (north and y - 2 or y)     -- step deeper from neighbour
+    else
+        return nil                                                 -- interior opening - skip
+    end
+    local s = cell:getGridSquare(sx, sy, z)
+    if s and not s:isOutside() and s:isFree(false) then return s end
+    return (insideA and a) or b                                    -- fall back to the adjacent tile
+end
+
+-- Patrol points within `radius` of the player: an inside stand tile + the opening
+-- to face, for every window PLUS the single nearest exterior door (front or back,
+-- whichever is closer). Used by "guard the front". Dedupes by stand tile.
 local function findFrontWindows(player, radius)
     local cell = getCell()
     local px, py, pz = math.floor(player:getX()), math.floor(player:getY()), math.floor(player:getZ())
     local posts, seen = {}, {}
+    local function addPost(stand, faceSq, isDoor)
+        local key = stand:getX() .. ":" .. stand:getY()
+        if seen[key] then return end
+        seen[key] = true
+        posts[#posts + 1] = { sx = stand:getX() + 0.5, sy = stand:getY() + 0.5, sz = stand:getZ(),
+                              wx = faceSq:getX() + 0.5, wy = faceSq:getY() + 0.5, door = isDoor }
+    end
+    local bestDoor, bestD
     for dx = -radius, radius do
         for dy = -radius, radius do
-            local wsq = cell:getGridSquare(px + dx, py + dy, pz)
-            local win = wsq and wsq:getWindow()
-            if win then
-                local other = win:getNorth()
-                    and cell:getGridSquare(wsq:getX(), wsq:getY() - 1, wsq:getZ())
-                    or  cell:getGridSquare(wsq:getX() - 1, wsq:getY(), wsq:getZ())
-                local stand
-                for _, cand in ipairs({ wsq, other }) do
-                    if cand and not cand:isOutside() then stand = cand; break end
+            local sq = cell:getGridSquare(px + dx, py + dy, pz)
+            if sq then
+                local win = sq:getWindow()
+                if win then
+                    local stand = insideStand(cell, sq, win:getNorth())
+                    if stand then addPost(stand, sq, false) end
                 end
-                if stand then
-                    local key = stand:getX() .. ":" .. stand:getY()
-                    if not seen[key] then
-                        seen[key] = true
-                        posts[#posts + 1] = { sx = stand:getX() + 0.5, sy = stand:getY() + 0.5, sz = stand:getZ(),
-                                              wx = wsq:getX() + 0.5, wy = wsq:getY() + 0.5 }
-                    end
+                local door = sq:getIsoDoor()
+                if door and door:isExterior() then
+                    local d = BanditUtils.DistTo(sq:getX(), sq:getY(), player:getX(), player:getY())
+                    if not bestD or d < bestD then bestDoor, bestD = sq, d end
                 end
             end
         end
+    end
+    if bestDoor then
+        pcall(function()
+            local stand = insideStand(cell, bestDoor, bestDoor:getIsoDoor():getNorth())
+            if stand then addPost(stand, bestDoor, true) end
+        end)
     end
     return posts
 end
@@ -1672,7 +1755,7 @@ local function doAction(entry, ctx)
         Bandit.ClearTasks(bandit)
         Bandit.SetProgramStage(bandit, "Main", {})
         Bandit.ForceSyncPart(bandit, { id = brain.id, program = brain.program })
-        return true, ctx.pick({ "On you.", "Falling in.", "Right with you.", "Back at your side." })
+        return true, ctx.pick(fallInBarks)
 
     elseif act == "FRONTGUARD" then
         -- Patrol the windows near where you're standing, calling out threats.
@@ -1682,7 +1765,11 @@ local function doAction(entry, ctx)
             return true, ctx.pick({ "No windows around here to cover.",
                 "I don't see any windows to watch from where you're standing." })
         end
-        brain.bwoFront = { posts = posts, idx = 1 }
+        local bl = ctx.player:getBuilding()
+        local bd = bl and bl:getDef()
+        brain.bwoFront = { posts = posts, idx = 1,
+                           bldg = bd and { x1=bd:getX(), y1=bd:getY(), x2=bd:getX2(), y2=bd:getY2() } or nil,
+                           ax = ctx.player:getX(), ay = ctx.player:getY() }
         brain.bwoGuard, brain.bwoRelax = nil, nil
         Bandit.ClearTasks(bandit)
         Bandit.SetProgramStage(bandit, "Front", {})
